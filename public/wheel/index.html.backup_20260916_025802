@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0e1a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="format-detection" content="telephone=no">
+    <title>🎡 عجلة الحظ | VEXORA</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        /* ============================================================
+           🎨 DESIGN SYSTEM 2026
+           ============================================================ */
+        *,
+        *::before,
+        *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-touch-callout: none;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        :root {
+            /* ✅ Colors — Dark Theme (Default) */
+            --bg-base: var(--tg-theme-bg-color, #0a0e1a);
+            --bg-elevated: var(--tg-theme-secondary-bg-color, #151b2e);
+            --bg-surface: rgba(255, 255, 255, 0.03);
+            --bg-glass: rgba(255, 255, 255, 0.06);
+            --border-subtle: rgba(255, 255, 255, 0.08);
+            --border-strong: rgba(255, 255, 255, 0.15);
+
+            /* ✅ Text */
+            --text-primary: var(--tg-theme-text-color, #f1f5f9);
+            --text-secondary: var(--tg-theme-hint-color, #94a3b8);
+            --text-tertiary: #64748b;
+
+            /* ✅ Brand */
+            --brand-primary: #fbbf24;
+            --brand-secondary: #f59e0b;
+            --brand-gradient: linear-gradient(135deg, #fbbf24 0%, #f59e0b 50%, #d97706 100%);
+
+            /* ✅ Semantic */
+            --success: #10b981;
+            --danger: #ef4444;
+            --info: #3b82f6;
+
+            /* ✅ Buttons */
+            --button-bg: var(--tg-theme-button-color, #3b82f6);
+            --button-text: var(--tg-theme-button-text-color, #ffffff);
+
+            /* ✅ Shadows */
+            --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.2);
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
+            --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.3);
+            --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
+            --shadow-glow: 0 0 32px rgba(251, 191, 36, 0.25);
+            --shadow-glow-strong: 0 0 48px rgba(251, 191, 36, 0.4);
+
+            /* ✅ Radius */
+            --radius-xs: 6px;
+            --radius-sm: 10px;
+            --radius-md: 14px;
+            --radius-lg: 20px;
+            --radius-xl: 28px;
+            --radius-full: 9999px;
+
+            /* ✅ Spacing */
+            --space-1: 4px;
+            --space-2: 8px;
+            --space-3: 12px;
+            --space-4: 16px;
+            --space-5: 20px;
+            --space-6: 24px;
+
+            /* ✅ Transitions */
+            --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+            --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+            --transition-slow: 400ms cubic-bezier(0.4, 0, 0.2, 1);
+            --transition-spring: 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        /* ============================================================
+           🌓 LIGHT THEME
+           ============================================================ */
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-base: var(--tg-theme-bg-color, #f8fafc);
+                --bg-elevated: var(--tg-theme-secondary-bg-color, #ffffff);
+                --bg-surface: rgba(0, 0, 0, 0.02);
+                --bg-glass: rgba(0, 0, 0, 0.04);
+                --border-subtle: rgba(0, 0, 0, 0.06);
+                --border-strong: rgba(0, 0, 0, 0.12);
+                --text-primary: var(--tg-theme-text-color, #0f172a);
+                --text-secondary: var(--tg-theme-hint-color, #64748b);
+                --text-tertiary: #94a3b8;
+                --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+                --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.08);
+                --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.1);
+                --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.15);
+            }
+        }
+
+        /* ============================================================
+           📱 BASE LAYOUT — 100dvh для mobile
+           ============================================================ */
+        html {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: 'Cairo', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-base);
+            color: var(--text-primary);
+            height: 100dvh;
+            width: 100vw;
+            overflow: hidden;
+            position: fixed;
+            top: 0;
+            left: 0;
+            display: flex;
+            flex-direction: column;
+            padding: max(env(safe-area-inset-top), var(--space-2)) max(env(safe-area-inset-right), var(--space-2)) max(env(safe-area-inset-bottom), var(--space-2)) max(env(safe-area-inset-left), var(--space-2));
+            user-select: none;
+            -webkit-user-select: none;
+            overscroll-behavior: none;
+        }
+
+        /* ============================================================
+           🌌 AMBIENT BACKGROUND
+           ============================================================ */
+        .ambient-bg {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+
+        .ambient-bg::before,
+        .ambient-bg::after {
+            content: '';
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(100px);
+            opacity: 0.15;
+        }
+
+        .ambient-bg::before {
+            width: 320px;
+            height: 320px;
+            background: var(--brand-primary);
+            top: -120px;
+            right: -120px;
+            animation: ambientFloat1 18s ease-in-out infinite;
+        }
+
+        .ambient-bg::after {
+            width: 380px;
+            height: 380px;
+            background: #8b5cf6;
+            bottom: -150px;
+            left: -150px;
+            animation: ambientFloat2 22s ease-in-out infinite;
+        }
+
+        @keyframes ambientFloat1 {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            50% { transform: translate(-40px, 40px) scale(1.15); }
+        }
+
+        @keyframes ambientFloat2 {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            50% { transform: translate(40px, -40px) scale(1.1); }
+        }
+
+        /* ============================================================
+           📦 APP CONTAINER
+           ============================================================ */
+        .app {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            height: 100%;
+            max-width: 480px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-rows: auto auto 1fr auto;
+            gap: var(--space-2);
+        }
+
+        /* ============================================================
+           🏆 HEADER
+           ============================================================ */
+        .header {
+            text-align: center;
+            padding: var(--space-1) 0;
+        }
+
+        .header__logo {
+            font-size: clamp(24px, 6vw, 32px);
+            line-height: 1;
+            display: inline-block;
+            margin-bottom: var(--space-1);
+            animation: logoFloat 3.5s ease-in-out infinite;
+            filter: drop-shadow(0 4px 12px rgba(251, 191, 36, 0.5));
+        }
+
+        @keyframes logoFloat {
+            0%, 100% { transform: translateY(0) rotate(0deg); }
+            50% { transform: translateY(-4px) rotate(6deg); }
+        }
+
+        .header__title {
+            font-size: clamp(16px, 4.5vw, 22px);
+            font-weight: 800;
+            background: var(--brand-gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.02em;
+            line-height: 1.2;
+        }
+
+        .header__subtitle {
+            font-size: clamp(8px, 2.5vw, 10px);
+            color: var(--text-tertiary);
+            font-weight: 700;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+
+        /* ============================================================
+           📊 STATS GRID — GLASSMORPHISM
+           ============================================================ */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: var(--space-2);
+            padding: var(--space-1) 0;
+        }
+
+        .stat {
+            background: var(--bg-glass);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            padding: var(--space-2) var(--space-1);
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+            transition: transform var(--transition-base), border-color var(--transition-base);
+        }
+
+        .stat::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--brand-primary), transparent);
+            opacity: 0.5;
+        }
+
+        .stat:active {
+            transform: scale(0.97);
+        }
+
+        .stat__icon {
+            font-size: clamp(10px, 3vw, 13px);
+            display: block;
+            margin-bottom: 2px;
+            opacity: 0.9;
+        }
+
+        .stat__value {
+            font-size: clamp(13px, 3.8vw, 17px);
+            font-weight: 800;
+            color: var(--text-primary);
+            display: block;
+            line-height: 1.1;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.02em;
+        }
+
+        .stat__value--gold {
+            background: var(--brand-gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .stat__label {
+            font-size: clamp(7px, 2vw, 9px);
+            color: var(--text-tertiary);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 1px;
+        }
+
+        /* ============================================================
+           🎡 WHEEL STAGE — THE STAR
+           ============================================================ */
+        .stage {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 0;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        .wheel {
+            position: relative;
+            width: min(100%, 100%);
+            aspect-ratio: 1 / 1;
+            max-height: 100%;
+            max-width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ✅ Pointer */
+        .wheel__pointer {
+            position: absolute;
+            top: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 0;
+            height: 0;
+            border-left: clamp(10px, 2.8vw, 14px) solid transparent;
+            border-right: clamp(10px, 2.8vw, 14px) solid transparent;
+            border-top: clamp(20px, 5.5vw, 28px) solid var(--danger);
+            z-index: 10;
+            filter: drop-shadow(0 3px 8px rgba(239, 68, 68, 0.5));
+            animation: pointerBounce 2.5s ease-in-out infinite;
+        }
+
+        .wheel__pointer::after {
+            content: '';
+            position: absolute;
+            top: calc(-1 * clamp(21px, 5.8vw, 29px));
+            left: calc(-1 * clamp(7px, 2vw, 10px));
+            width: clamp(14px, 4vw, 20px);
+            height: clamp(7px, 2vw, 10px);
+            background: var(--danger);
+            border-radius: 50% 50% 0 0;
+        }
+
+        @keyframes pointerBounce {
+            0%, 100% { transform: translateX(-50%) translateY(0); }
+            50% { transform: translateX(-50%) translateY(-3px); }
+        }
+
+        /* ✅ Canvas */
+        #wheel {
+            width: 100%;
+            height: 100%;
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 50%;
+            display: block;
+            box-shadow:
+                0 0 0 3px var(--bg-elevated),
+                0 0 0 5px var(--brand-primary),
+                0 0 0 8px var(--bg-elevated),
+                0 0 0 10px var(--bg-base),
+                0 12px 40px rgba(0, 0, 0, 0.5),
+                var(--shadow-glow);
+            will-change: transform;
+            backface-visibility: hidden;
+            transform: translateZ(0);
+        }
+
+        /* ✅ Center Button */
+        .wheel__center {
+            position: absolute;
+            width: 15%;
+            height: 15%;
+            min-width: 44px;
+            min-height: 44px;
+            max-width: 70px;
+            max-height: 70px;
+            border-radius: 50%;
+            background: var(--brand-gradient);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: clamp(18px, 5vw, 28px);
+            cursor: pointer;
+            z-index: 5;
+            border: clamp(2px, 0.5vw, 3px) solid rgba(255, 255, 255, 0.95);
+            box-shadow:
+                0 4px 16px rgba(0, 0, 0, 0.5),
+                inset 0 -3px 6px rgba(0, 0, 0, 0.2),
+                inset 0 2px 4px rgba(255, 255, 255, 0.4),
+                0 0 24px rgba(251, 191, 36, 0.6);
+            transition: transform var(--transition-base);
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .wheel__center:active {
+            transform: scale(0.92);
+        }
+
+        .wheel__center.is-spinning {
+            pointer-events: none;
+            animation: centerPulse 0.9s ease-in-out infinite;
+        }
+
+        @keyframes centerPulse {
+            0%, 100% { transform: scale(1); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5), 0 0 24px rgba(251, 191, 36, 0.6); }
+            50% { transform: scale(1.08); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5), 0 0 48px rgba(251, 191, 36, 0.9); }
+        }
+
+        /* ============================================================
+           🎮 ACTION BUTTON
+           ============================================================ */
+        .action {
+            padding: var(--space-1) 0;
+        }
+
+        .btn-spin {
+            width: 100%;
+            padding: clamp(10px, 2.8vw, 14px) clamp(14px, 3.5vw, 20px);
+            background: var(--brand-gradient);
+            color: #0a0e1a;
+            border: none;
+            border-radius: var(--radius-lg);
+            font-family: inherit;
+            font-size: clamp(13px, 3.6vw, 16px);
+            font-weight: 800;
+            letter-spacing: 0.02em;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: var(--space-2);
+            position: relative;
+            overflow: hidden;
+            box-shadow:
+                0 4px 20px rgba(251, 191, 36, 0.4),
+                0 0 0 1px rgba(255, 255, 255, 0.1) inset,
+                inset 0 1px 2px rgba(255, 255, 255, 0.3);
+            transition: transform var(--transition-base), box-shadow var(--transition-base);
+            -webkit-tap-highlight-color: transparent;
+            will-change: transform;
+        }
+
+        .btn-spin::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+            transform: translateX(-100%);
+            transition: transform 0.6s;
+        }
+
+        .btn-spin:active {
+            transform: scale(0.98);
+            box-shadow:
+                0 2px 12px rgba(251, 191, 36, 0.3),
+                0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+        }
+
+        .btn-spin:not(:disabled):hover::before {
+            transform: translateX(100%);
+        }
+
+        .btn-spin:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            filter: grayscale(0.6);
+        }
+
+        /* ============================================================
+           ⏳ LOADING OVERLAY
+           ============================================================ */
+        .overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(10, 14, 26, 0.85);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            padding: var(--space-4);
+            animation: fadeIn var(--transition-base);
+        }
+
+        .overlay.is-open {
+            display: flex;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .overlay__content {
+            text-align: center;
+            color: var(--text-primary);
+        }
+
+        .overlay__spinner {
+            width: clamp(40px, 10vw, 56px);
+            height: clamp(40px, 10vw, 56px);
+            border: 3px solid rgba(251, 191, 36, 0.15);
+            border-top-color: var(--brand-primary);
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+            margin: 0 auto var(--space-3);
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .overlay__text {
+            font-size: clamp(12px, 3.2vw, 14px);
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+
+        /* ============================================================
+           🎊 RESULT MODAL
+           ============================================================ */
+        .modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(10, 14, 26, 0.9);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 110;
+            padding: var(--space-4);
+            animation: fadeIn var(--transition-base);
+        }
+
+        .modal.is-open {
+            display: flex;
+        }
+
+        .modal__card {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-xl);
+            padding: var(--space-5) var(--space-4);
+            text-align: center;
+            max-width: 320px;
+            width: 100%;
+            position: relative;
+            overflow: hidden;
+            box-shadow:
+                0 20px 60px rgba(0, 0, 0, 0.6),
+                0 0 0 1px rgba(251, 191, 36, 0.3),
+                var(--shadow-glow);
+            animation: modalIn var(--transition-spring);
+        }
+
+        .modal__card::before {
+            content: '';
+            position: absolute;
+            inset: -50%;
+            background: conic-gradient(from 0deg, transparent, var(--brand-primary), transparent, var(--brand-primary), transparent);
+            opacity: 0.08;
+            animation: rotate 6s linear infinite;
+            pointer-events: none;
+        }
+
+        @keyframes rotate {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes modalIn {
+            from { transform: scale(0.6) translateY(40px); opacity: 0; }
+            to { transform: scale(1) translateY(0); opacity: 1; }
+        }
+
+        .modal__content {
+            position: relative;
+            z-index: 1;
+        }
+
+        .modal__icon {
+            font-size: clamp(48px, 14vw, 72px);
+            line-height: 1;
+            display: inline-block;
+            margin-bottom: var(--space-3);
+            animation: iconBounce 1.2s ease-in-out infinite;
+            filter: drop-shadow(0 6px 20px rgba(251, 191, 36, 0.6));
+        }
+
+        @keyframes iconBounce {
+            0%, 100% { transform: translateY(0) scale(1); }
+            50% { transform: translateY(-8px) scale(1.06); }
+        }
+
+        .modal__title {
+            font-size: clamp(18px, 5vw, 24px);
+            font-weight: 900;
+            background: var(--brand-gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: var(--space-2);
+            letter-spacing: -0.02em;
+        }
+
+        .modal__prize {
+            font-size: clamp(14px, 3.8vw, 17px);
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: var(--space-2);
+        }
+
+        .modal__value {
+            font-size: clamp(24px, 7vw, 34px);
+            font-weight: 900;
+            color: var(--success);
+            margin-bottom: var(--space-5);
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.02em;
+            text-shadow: 0 2px 12px rgba(16, 185, 129, 0.5);
+        }
+
+        .modal__btn {
+            width: 100%;
+            padding: clamp(11px, 3vw, 14px);
+            background: var(--brand-gradient);
+            color: #0a0e1a;
+            border: none;
+            border-radius: var(--radius-md);
+            font-family: inherit;
+            font-size: clamp(13px, 3.4vw, 15px);
+            font-weight: 800;
+            cursor: pointer;
+            letter-spacing: 0.02em;
+            transition: transform var(--transition-base);
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .modal__btn:active {
+            transform: scale(0.97);
+        }
+
+        /* ============================================================
+           ✨ CONFETTI CANVAS
+           ============================================================ */
+        #confetti {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 105;
+        }
+
+        /* ============================================================
+           🎯 LANDSCAPE / TALL ADJUSTMENTS
+           ============================================================ */
+        @media (max-height: 640px) {
+            .app {
+                gap: var(--space-1);
+            }
+            .header__logo { font-size: 20px; }
+            .header__title { font-size: 15px; }
+            .stat { padding: var(--space-1); }
+            .stat__value { font-size: 12px; }
+            .btn-spin { padding: 9px 14px; font-size: 12px; }
+        }
+
+        @media (max-height: 520px) {
+            .header { display: none; }
+            .stats { gap: 4px; }
+            .stat__label { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <!-- ✅ Ambient Background -->
+    <div class="ambient-bg"></div>
+
+    <!-- ✅ Confetti -->
+    <canvas id="confetti"></canvas>
+
+    <!-- ✅ App -->
+    <main class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header__logo">🎡</div>
+            <h1 class="header__title">عجلة الحظ</h1>
+            <p class="header__subtitle">VEXORA</p>
+        </header>
+
+        <!-- Stats -->
+        <section class="stats" aria-label="إحصائيات">
+            <article class="stat">
+                <span class="stat__icon" aria-hidden="true">🎟</span>
+                <span class="stat__value stat__value--gold" id="statSpins">0</span>
+                <span class="stat__label">لفات</span>
+            </article>
+            <article class="stat">
+                <span class="stat__icon" aria-hidden="true">📅</span>
+                <span class="stat__value" id="statToday">0/100</span>
+                <span class="stat__label">اليوم</span>
+            </article>
+            <article class="stat">
+                <span class="stat__icon" aria-hidden="true">💰</span>
+                <span class="stat__value" id="statWon">0</span>
+                <span class="stat__label">المكاسب</span>
+            </article>
+        </section>
+
+        <!-- Wheel Stage -->
+        <section class="stage" aria-label="عجلة الحظ">
+            <div class="wheel">
+                <div class="wheel__pointer" aria-hidden="true"></div>
+                <canvas id="wheel" role="img" aria-label="عجلة الجوائز"></canvas>
+                <button class="wheel__center" id="centerBtn" aria-label="تدوير العجلة">🎯</button>
+            </div>
+        </section>
+
+        <!-- Action -->
+        <section class="action">
+            <button class="btn-spin" id="spinBtn" onclick="spin()">
+                <span aria-hidden="true">🎰</span>
+                <span id="spinBtnText">لف العجلة</span>
+            </button>
+        </section>
+    </main>
+
+    <!-- Loading -->
+    <div class="overlay" id="loading" role="status" aria-live="polite">
+        <div class="overlay__content">
+            <div class="overlay__spinner"></div>
+            <p class="overlay__text">جاري الدوران...</p>
+        </div>
+    </div>
+
+    <!-- Result Modal -->
+    <div class="modal" id="result" role="dialog" aria-modal="true">
+        <div class="modal__card">
+            <div class="modal__content">
+                <div class="modal__icon" id="resultIcon">🎊</div>
+                <h2 class="modal__title" id="resultTitle">مبروك!</h2>
+                <p class="modal__prize" id="resultPrize"></p>
+                <p class="modal__value" id="resultValue"></p>
+                <button class="modal__btn" onclick="closeResult()">حسناً</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        'use strict';
+
+        // ============================================================
+        //  🎯 TELEGRAM WEBAPP
+        // ============================================================
+        const tg = window.Telegram?.WebApp;
+        if (tg) {
+            tg.ready();
+            tg.expand();
+            tg.setHeaderColor('#0a0e1a');
+            tg.setBackgroundColor('#0a0e1a');
+            tg.disableVerticalSwipes?.();
+        }
+
+        // ============================================================
+        //  ⚙️ CONFIG
+        // ============================================================
+        const CONFIG = Object.freeze({
+            API_URL: window.location.origin,
+            SPIN_DURATION: 5000,
+            MIN_ROTATIONS: 5,
+            CONFETTI_COUNT: 80,
+            CONFETTI_DURATION: 3000,
+        });
+
+        const COLORS = Object.freeze([
+            '#ef4444', '#f59e0b', '#10b981', '#3b82f6',
+            '#8b5cf6', '#ec4899', '#06b6d4', '#f97316',
+            '#84cc16', '#14b8a6', '#a855f7', '#f43f5e',
+            '#eab308', '#22c55e', '#0ea5e9', '#6366f1',
+        ]);
+
+        // ============================================================
+        //  📊 STATE
+        // ============================================================
+        const state = {
+            prizes: [],
+            isSpinning: false,
+            rotation: 0,
+            availableSpins: 0,
+            todaySpins: 0,
+            dailyLimit: 100,
+            totalWon: 0,
+        };
+
+        // ============================================================
+        //  🎯 DOM REFS
+        // ============================================================
+        const $ = (id) => document.getElementById(id);
+        const canvas = $('wheel');
+        const ctx = canvas.getContext('2d');
+        const confettiCanvas = $('confetti');
+        const confettiCtx = confettiCanvas.getContext('2d');
+
+        // ============================================================
+        //  🚀 INIT
+        // ============================================================
+        async function init() {
+            try {
+                const res = await fetch(`${CONFIG.API_URL}/api/wheel/state`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Telegram-Init-Data': tg?.initData || '',
+                    },
+                    body: JSON.stringify({
+                        telegram_id: tg?.initDataUnsafe?.user?.id,
+                    }),
+                });
+
+                const data = await res.json();
+
+                if (!data.success) {
+                    throw new Error(data.message || 'فشل التحميل');
+                }
+
+                Object.assign(state, {
+                    prizes: data.prizes,
+                    availableSpins: data.available_spins,
+                    todaySpins: data.spins_today,
+                    dailyLimit: data.daily_limit,
+                    totalWon: data.total_won_amount,
+                });
+
+                renderStats();
+                renderWheel();
+            } catch (err) {
+                console.error('[init]', err);
+                toast(err.message || 'فشل الاتصال');
+            }
+        }
+
+        // ============================================================
+        //  📊 RENDER STATS
+        // ============================================================
+        function renderStats() {
+            $('statSpins').textContent = state.availableSpins;
+            $('statToday').textContent = `${state.todaySpins}/${state.dailyLimit}`;
+            $('statWon').textContent = Math.round(state.totalWon);
+
+            const btn = $('spinBtn');
+            const btnText = $('spinBtnText');
+
+            if (state.availableSpins <= 0) {
+                btn.disabled = true;
+                btnText.textContent = 'لا توجد لفات';
+            } else if (state.todaySpins >= state.dailyLimit) {
+                btn.disabled = true;
+                btnText.textContent = 'وصلت الحد اليومي';
+            } else {
+                btn.disabled = false;
+                btnText.textContent = `لف العجلة (${state.availableSpins})`;
+            }
+        }
+
+        // ============================================================
+        //  🎡 RENDER WHEEL — RESPONSIVE
+        // ============================================================
+        function renderWheel() {
+            const rect = canvas.getBoundingClientRect();
+            const size = Math.min(rect.width, rect.height);
+            if (size <= 0) return;
+
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = size * dpr;
+            canvas.height = size * dpr;
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, size, size);
+
+            if (!state.prizes.length) return;
+
+            const cx = size / 2;
+            const cy = size / 2;
+            const radius = cx - Math.max(8, size * 0.025);
+            const sliceCount = state.prizes.length;
+            const sliceAngle = (Math.PI * 2) / sliceCount;
+            const totalWeight = state.prizes.reduce((s, p) => s + (p.weight || 1), 0);
+
+            // ✅ Fluid font sizes
+            const fs = {
+                name: Math.max(9, Math.min(17, size * 0.031)),
+                value: Math.max(8, Math.min(15, size * 0.027)),
+                percent: Math.max(7, Math.min(12, size * 0.021)),
+            };
+
+            state.prizes.forEach((prize, i) => {
+                const start = i * sliceAngle - Math.PI / 2;
+                const end = start + sliceAngle;
+
+                // ✅ Slice
+                ctx.save();
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.arc(cx, cy, radius, start, end);
+                ctx.closePath();
+                ctx.shadowColor = 'rgba(0,0,0,0.35)';
+                ctx.shadowBlur = size * 0.015;
+                ctx.shadowOffsetY = size * 0.004;
+                ctx.fillStyle = COLORS[i % COLORS.length];
+                ctx.fill();
+                ctx.restore();
+
+                // ✅ Divider
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.arc(cx, cy, radius, start, end);
+                ctx.closePath();
+                ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+                ctx.lineWidth = Math.max(1.5, size * 0.004);
+                ctx.stroke();
+
+                // ✅ Text
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(start + sliceAngle / 2);
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'middle';
+                ctx.shadowColor = 'rgba(0,0,0,0.7)';
+                ctx.shadowBlur = 4;
+                ctx.shadowOffsetX = 1;
+                ctx.shadowOffsetY = 1;
+
+                const tx = radius - size * 0.05;
+
+                // Name
+                ctx.font = `800 ${fs.name}px Cairo, Arial, sans-serif`;
+                ctx.fillStyle = '#ffffff';
+                ctx.fillText(`${prize.icon} ${prize.name}`, tx, -fs.name * 0.7);
+
+                // Value
+                if (prize.value > 0) {
+                    ctx.font = `800 ${fs.value}px Cairo, Arial, sans-serif`;
+                    ctx.fillStyle = '#fef08a';
+                    ctx.fillText(`${prize.value.toFixed(0)} ${prize.currency}`, tx, fs.value * 0.6);
+                }
+
+                // Percent
+                if (prize.weight && totalWeight > 0) {
+                    const pct = ((prize.weight / totalWeight) * 100).toFixed(1);
+                    ctx.font = `600 ${fs.percent}px Cairo, Arial, sans-serif`;
+                    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+                    ctx.fillText(`${pct}%`, tx, fs.percent * 1.8);
+                }
+
+                ctx.restore();
+            });
+
+            // ✅ Center hub
+            const hubR = size * 0.09;
+            const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, hubR);
+            grad.addColorStop(0, '#1e293b');
+            grad.addColorStop(1, '#0a0e1a');
+
+            ctx.beginPath();
+            ctx.arc(cx, cy, hubR, 0, Math.PI * 2);
+            ctx.fillStyle = grad;
+            ctx.fill();
+            ctx.strokeStyle = '#fbbf24';
+            ctx.lineWidth = Math.max(2, size * 0.005);
+            ctx.stroke();
+
+            ctx.save();
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = `bold ${hubR}px Arial`;
+            ctx.fillText('🎡', cx, cy);
+            ctx.restore();
+        }
+
+        // ============================================================
+        //  🎰 SPIN
+        // ============================================================
+        async function spin() {
+            if (state.isSpinning) return;
+            if (state.availableSpins <= 0) return;
+            if (state.todaySpins >= state.dailyLimit) return;
+
+            state.isSpinning = true;
+            $('spinBtn').disabled = true;
+            $('centerBtn').classList.add('is-spinning');
+            $('loading').classList.add('is-open');
+
+            try {
+                const res = await fetch(`${CONFIG.API_URL}/api/wheel/spin`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Telegram-Init-Data': tg?.initData || '',
+                    },
+                    body: JSON.stringify({
+                        telegram_id: tg?.initDataUnsafe?.user?.id,
+                    }),
+                });
+
+                const data = await res.json();
+
+                if (!data.success) {
+                    throw new Error(data.message || 'فشل اللف');
+                }
+
+                const idx = data.prize_index;
+                const count = data.prize_count || state.prizes.length;
+                const slice = 360 / count;
+                const sectorCenter = idx * slice + slice / 2;
+                const target = 360 * CONFIG.MIN_ROTATIONS + (360 - sectorCenter);
+
+                animate(target, () => {
+                    Object.assign(state, {
+                        availableSpins: data.available_spins,
+                        todaySpins: data.spins_today,
+                        totalWon: data.total_won_amount,
+                    });
+
+                    renderStats();
+                    showResult(data.prize, data.won_value, data.currency);
+
+                    if (data.won_value > 0) {
+                        fireConfetti();
+                    }
+
+                    resetSpin();
+                });
+            } catch (err) {
+                console.error('[spin]', err);
+                toast(err.message || 'فشل الاتصال');
+                resetSpin();
+            }
+        }
+
+        function resetSpin() {
+            state.isSpinning = false;
+            $('spinBtn').disabled = false;
+            $('centerBtn').classList.remove('is-spinning');
+            $('loading').classList.remove('is-open');
+        }
+
+        // ============================================================
+        //  🎬 ANIMATE
+        // ============================================================
+        function animate(target, done) {
+            const start = performance.now();
+            const from = state.rotation;
+            const delta = target;
+
+            const easeOutQuart = (t) => 1 - Math.pow(1 - t, 4);
+
+            (function frame(now) {
+                const t = Math.min((now - start) / CONFIG.SPIN_DURATION, 1);
+                const eased = easeOutQuart(t);
+
+                state.rotation = from + delta * eased;
+                canvas.style.transform = `rotate(${state.rotation}deg)`;
+
+                if (t < 1) {
+                    requestAnimationFrame(frame);
+                } else {
+                    state.rotation = (from + delta) % 360;
+                    canvas.style.transform = `rotate(${state.rotation}deg)`;
+                    done();
+                }
+            })(start);
+        }
+
+        // ============================================================
+        //  🎊 RESULT MODAL
+        // ============================================================
+        function showResult(prize, value, currency) {
+            $('resultIcon').textContent = prize.icon || '🎊';
+
+            let title = 'مبروك!';
+            let text = '';
+
+            if (prize.is_recycle) {
+                title = 'لفة مجانية!';
+                text = '♻️ لفة إضافية';
+            } else if (prize.is_empty) {
+                title = 'حظ أوفر';
+                text = '💔 لا شيء هذه المرة';
+            } else if (value > 0) {
+                text = `+${value.toFixed(2)} ${currency}`;
+            }
+
+            $('resultTitle').textContent = title;
+            $('resultPrize').textContent = prize.name;
+            $('resultValue').textContent = text;
+
+            $('result').classList.add('is-open');
+        }
+
+        function closeResult() {
+            $('result').classList.remove('is-open');
+        }
+
+        // ============================================================
+        //  ❌ TOAST
+        // ============================================================
+        function toast(message) {
+            if (tg) {
+                tg.showAlert(message);
+            } else {
+                alert(message);
+            }
+        }
+
+        // ============================================================
+        //  🎉 CONFETTI
+        // ============================================================
+        function fireConfetti() {
+            confettiCanvas.width = window.innerWidth;
+            confettiCanvas.height = window.innerHeight;
+
+            const particles = Array.from({ length: CONFIG.CONFETTI_COUNT }, () => ({
+                x: Math.random() * confettiCanvas.width,
+                y: -20 - Math.random() * 100,
+                vx: (Math.random() - 0.5) * 4,
+                vy: 2 + Math.random() * 4,
+                size: 6 + Math.random() * 8,
+                color: COLORS[Math.floor(Math.random() * COLORS.length)],
+                rotation: Math.random() * 360,
+                rotSpeed: (Math.random() - 0.5) * 10,
+                opacity: 1,
+            }));
+
+            const start = performance.now();
+
+            (function frame(now) {
+                const elapsed = now - start;
+                confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+
+                let alive = 0;
+
+                for (const p of particles) {
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.vy += 0.1;
+                    p.rotation += p.rotSpeed;
+                    p.opacity = Math.max(0, 1 - elapsed / CONFIG.CONFETTI_DURATION);
+
+                    if (p.opacity > 0 && p.y < confettiCanvas.height + 50) {
+                        alive++;
+                        confettiCtx.save();
+                        confettiCtx.translate(p.x, p.y);
+                        confettiCtx.rotate((p.rotation * Math.PI) / 180);
+                        confettiCtx.globalAlpha = p.opacity;
+                        confettiCtx.fillStyle = p.color;
+                        confettiCtx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+                        confettiCtx.restore();
+                    }
+                }
+
+                if (alive > 0 && elapsed < CONFIG.CONFETTI_DURATION + 500) {
+                    requestAnimationFrame(frame);
+                } else {
+                    confettiCtx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+                }
+            })(start);
+        }
+
+        // ============================================================
+        //  🔄 RESIZE HANDLER
+        // ============================================================
+        let resizeTimer;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                confettiCanvas.width = window.innerWidth;
+                confettiCanvas.height = window.innerHeight;
+                renderWheel();
+            }, 150);
+        });
+
+        // ============================================================
+        //  🎯 START
+        // ============================================================
+        document.addEventListener('DOMContentLoaded', () => {
+            init();
+        });
+    </script>
+</body>
+</html>

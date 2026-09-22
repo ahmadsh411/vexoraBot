@@ -1,0 +1,9 @@
+{
+  "$schema": "https://unpkg.com/wrangler@latest/config-schema.json",
+  "name": "vexora-wheel",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-18",
+  "vars": {
+    "BACKEND_URL": "https://vexora-dz-dev.loca.lt"
+  }
+}

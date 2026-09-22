@@ -1,0 +1,375 @@
+<?php
+
+namespace App\Telegram\Handlers\User;
+
+use App\Models\User;
+use App\Models\Wheel;
+use App\Models\WheelPrize;
+use App\Models\WheelSpin;
+use App\Services\WheelService;
+use SergiX44\Nutgram\Nutgram;
+use SergiX44\Nutgram\Telegram\Types\Keyboard\InlineKeyboardButton;
+use SergiX44\Nutgram\Telegram\Types\Keyboard\InlineKeyboardMarkup;
+use Illuminate\Support\Facades\Log;
+
+class UserWheelHandler
+{
+    // ============================================================
+    //  🎡 عرض العجلة
+    // ============================================================
+    public function index(Nutgram $bot): void
+    {
+        try {
+            $bot->answerCallbackQuery();
+        } catch (\Throwable $e) {
+        }
+
+        $user = User::where('telegram_id', $bot->userId())->first();
+
+        if (! $user) {
+            $bot->sendMessage(text: '❌ تعذر التعرف على حسابك.');
+            return;
+        }
+
+        $state = app(WheelService::class)->getState($user);
+
+        if (! $state) {
+            $this->safeEdit($bot, implode("\n", [
+                '🎡 <b>عجلة الحظ</b>',
+                '━━━━━━━━━━━━━━━━━━',
+                '',
+                '⚠️ العجلة غير مفعّلة حالياً.',
+            ]), InlineKeyboardMarkup::make()->addRow(
+                InlineKeyboardButton::make(text: '↩️ رجوع', callback_data: 'user.dashboard'),
+            ));
+            return;
+        }
+
+        $wheel = $state['wheel'];
+
+        $text = implode("\n", [
+            '🎡 <b>عجلة الحظ</b>',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '🎟 <b>اللفات المتاحة:</b> <b>' . $state['available_spins'] . '</b>',
+            '',
+            '📅 <b>اليوم:</b> <b>' . $state['spins_today'] . '</b> / <b>' . $wheel->daily_limit . '</b>',
+            '⏳ <b>متبقٍ اليوم:</b> <b>' . $state['remaining_today'] . '</b>',
+            '',
+            '💰 <b>إجمالي المكاسب:</b> <b>' . number_format($state['total_won_amount'], 2) . '</b> SYP',
+            '',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '💡 اضغط 🎰 لبدء اللفة!',
+        ]);
+
+        $keyboard = $this->buildKeyboard($state, $wheel);
+
+        $this->safeEdit($bot, $text, $keyboard);
+    }
+
+    // ============================================================
+    //  🎰 تنفيذ اللفة — مع GIF
+    // ============================================================
+    public function spin(Nutgram $bot): void
+    {
+        try {
+            $bot->answerCallbackQuery();
+        } catch (\Throwable $e) {
+        }
+
+        $user = User::where('telegram_id', $bot->userId())->first();
+
+        if (! $user) {
+            $bot->sendMessage(text: '❌ تعذر التعرف على حسابك.');
+            return;
+        }
+
+        try {
+            // ✅ 1. رسوم متحركة نصية (اختياري)
+            $this->animateSpin($bot);
+
+            // ✅ 2. تنفيذ اللفة
+            $result = app(WheelService::class)->spin($user);
+            $prize = $result['prize'];
+            $spin  = $result['spin'];
+
+            // ✅ 3. فهرس الجائزة
+            $prizeIndex = $this->getPrizeIndex($spin->wheel_id, $prize->id);
+
+            // ✅ 4. توليد GIF
+            $wheel = Wheel::find($spin->wheel_id);
+            $gifPath = app(\App\Services\WheelGifService::class)->generate($wheel, $prizeIndex);
+
+            // ✅ 5. نص النتيجة
+            $caption = $this->buildResultText($prize, $spin);
+
+            // ✅ 6. لوحة المفاتيح
+            $keyboard = InlineKeyboardMarkup::make()
+                ->addRow(
+                    InlineKeyboardButton::make(
+                        text: '🎡 العجلة مرة أخرى',
+                        callback_data: 'user.wheel.refresh',
+                    ),
+                )
+                ->addRow(
+                    InlineKeyboardButton::make(
+                        text: '🔙 لوحة التحكم',
+                        callback_data: 'user.dashboard',
+                    ),
+                );
+
+            // ✅ 7. إرسال GIF
+            $bot->sendAnimation(
+                animation: fopen($gifPath, 'r'),
+                caption: $caption,
+                parse_mode: 'HTML',
+                reply_markup: $keyboard,
+                duration: 3,
+                width: 500,
+                height: 500,
+            );
+
+            // ✅ 8. حذف GIF المؤقت
+            @unlink($gifPath);
+        } catch (\RuntimeException $e) {
+            Log::warning('Wheel spin error', [
+                'user_id' => $user->id,
+                'error'   => $e->getMessage(),
+            ]);
+
+            try {
+                $bot->answerCallbackQuery(
+                    text: $e->getMessage(),
+                    show_alert: true,
+                );
+            } catch (\Throwable $e2) {
+            }
+        } catch (\Throwable $e) {
+            Log::error('Wheel spin failed', [
+                'user_id' => $user->id,
+                'error'   => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
+            ]);
+
+            try {
+                $bot->answerCallbackQuery(
+                    text: '❌ حدث خطأ، حاول لاحقاً.',
+                    show_alert: true,
+                );
+            } catch (\Throwable $e2) {
+            }
+        }
+    }
+
+    // ============================================================
+    //  🎯 فهرس الجائزة
+    // ============================================================
+    private function getPrizeIndex(int $wheelId, int $prizeId): int
+    {
+        $prizes = WheelPrize::where('wheel_id', $wheelId)
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->pluck('id')
+            ->toArray();
+
+        $index = array_search($prizeId, $prizes);
+
+        return $index === false ? 0 : $index;
+    }
+
+    // ============================================================
+    //  🎬 رسوم متحركة نصية
+    // ============================================================
+    private function animateSpin(Nutgram $bot): void
+    {
+        $frames = [
+            '🎡 [⏳] <b>جاري الدوران...</b>',
+            '🎡 [🔄] <b>جاري الدوران...</b>',
+            '🎡 [↻] <b>جاري الدوران...</b>',
+            '🎡 [🎯] <b>تحديد الجائزة...</b>',
+        ];
+
+        foreach ($frames as $frame) {
+            try {
+                $bot->editMessageText(
+                    text: $frame . "\n\n━━━━━━━━━━━━━━━━━━\n\n⏳ <i>الرجاء الانتظار...</i>",
+                    parse_mode: 'HTML',
+                );
+                usleep(250000); // 0.25 ثانية
+            } catch (\Throwable $e) {
+                // تجاهل
+            }
+        }
+    }
+
+    // ============================================================
+    //  📝 نص النتيجة
+    // ============================================================
+    private function buildResultText(WheelPrize $prize, WheelSpin $spin): string
+    {
+        $text = "🎊 <b>مبروك!</b>\n\n";
+
+        if ($prize->isRecycle()) {
+            $text .= "♻️ <b>{$prize->name}</b>\n\n";
+            $text .= "🎉 حصلت على <b>لفة مجانية</b>!";
+        } elseif ($prize->isEmpty()) {
+            $text .= "{$prize->icon} <b>{$prize->name}</b>\n\n";
+            $text .= "💔 لا شيء هذه المرة.\n🍀 حظ أوفر!";
+        } else {
+            $text .= "{$prize->icon} <b>{$prize->name}</b>\n\n";
+            $text .= "💰 القيمة: <b>" . number_format((float) $spin->won_value, 2) . " {$spin->currency}</b>\n";
+            $text .= "✅ تمت إضافتها لرصيدك.";
+        }
+
+        return $text;
+    }
+
+    // ============================================================
+    //  📜 سجل اللفات
+    // ============================================================
+    public function history(Nutgram $bot): void
+    {
+        try {
+            $bot->answerCallbackQuery();
+        } catch (\Throwable $e) {
+        }
+
+        $user = User::where('telegram_id', $bot->userId())->first();
+
+        if (! $user) {
+            return;
+        }
+
+        $spins = WheelSpin::forUser($user->id)
+            ->latestFirst()
+            ->limit(10)
+            ->get();
+
+        if ($spins->isEmpty()) {
+            try {
+                $bot->answerCallbackQuery(
+                    text: '📭 لا يوجد سجل لفات بعد',
+                    show_alert: true,
+                );
+            } catch (\Throwable $e) {
+            }
+            return;
+        }
+
+        $text = "📜 <b>آخر 10 لفات</b>\n";
+        $text .= "━━━━━━━━━━━━━━━━━━\n\n";
+
+        foreach ($spins as $spin) {
+            $icon = $spin->prize?->icon ?? '❓';
+            $name = $spin->prize?->name ?? 'محذوفة';
+            $date = $spin->created_at->format('Y-m-d H:i');
+            $value = (float) $spin->won_value > 0
+                ? ' — ' . number_format((float) $spin->won_value, 2)
+                : '';
+
+            $text .= "{$icon} {$name}{$value}\n";
+            $text .= "   <i>{$date}</i>\n\n";
+        }
+
+        $keyboard = InlineKeyboardMarkup::make()
+            ->addRow(
+                InlineKeyboardButton::make(
+                    text: '↩️ رجوع للعجلة',
+                    callback_data: 'user.wheel.refresh',
+                ),
+            )
+            ->addRow(
+                InlineKeyboardButton::make(
+                    text: '🔙 لوحة التحكم',
+                    callback_data: 'user.dashboard',
+                ),
+            );
+
+        $this->safeEdit($bot, $text, $keyboard);
+    }
+
+    // ============================================================
+    //  Helpers
+    // ============================================================
+    private function buildKeyboard(array $state, $wheel): InlineKeyboardMarkup
+    {
+        $keyboard = InlineKeyboardMarkup::make();
+
+        $available = $state['available_spins'];
+        $today     = $state['spins_today'];
+        $limit     = $wheel->daily_limit;
+        $canSpin   = $available > 0 && $today < $limit;
+
+        if ($canSpin) {
+            $keyboard->addRow(
+                InlineKeyboardButton::make(
+                    text: '🎰 لف العجلة (' . $available . ')',
+                    callback_data: 'user.wheel.spin',
+                ),
+            );
+        } elseif ($available <= 0) {
+            $keyboard->addRow(
+                InlineKeyboardButton::make(
+                    text: '🚫 لا توجد لفات',
+                    callback_data: 'user.wheel.refresh',
+                ),
+            );
+        } else {
+            $keyboard->addRow(
+                InlineKeyboardButton::make(
+                    text: '⏰ وصلت الحد اليومي',
+                    callback_data: 'user.wheel.refresh',
+                ),
+            );
+        }
+
+        $keyboard->addRow(
+            InlineKeyboardButton::make(
+                text: '📜 سجل اللفات',
+                callback_data: 'user.wheel.history',
+            ),
+        );
+
+        $keyboard->addRow(
+            InlineKeyboardButton::make(
+                text: '🔄 تحديث',
+                callback_data: 'user.wheel.refresh',
+            ),
+        );
+
+        $keyboard->addRow(
+            InlineKeyboardButton::make(
+                text: '↩️ رجوع للوحة',
+                callback_data: 'user.dashboard',
+            ),
+        );
+
+        return $keyboard;
+    }
+
+    private function safeEdit(Nutgram $bot, string $text, $keyboard): void
+    {
+        try {
+            $bot->editMessageText(
+                text: $text,
+                parse_mode: 'HTML',
+                reply_markup: $keyboard,
+            );
+        } catch (\Throwable $e) {
+            if (str_contains($e->getMessage(), 'not modified')) {
+                return;
+            }
+
+            try {
+                $bot->sendMessage(
+                    text: $text,
+                    parse_mode: 'HTML',
+                    reply_markup: $keyboard,
+                );
+            } catch (\Throwable $e2) {
+                Log::warning('Wheel safeEdit failed', ['error' => $e2->getMessage()]);
+            }
+        }
+    }
+}

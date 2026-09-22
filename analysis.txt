@@ -1,0 +1,2004 @@
+<?php
+
+namespace App\Services\IChancy;
+
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use App\Helpers\ErrorMessages;
+
+class IChancyService
+{
+    private string $baseUrl;
+    private string $appKey;
+    private string $username;
+    private string $password;
+
+    private const CACHE_KEY = 'ichancy_session_cookie';
+    private const CACHE_TTL = 1800; // 30 دقيقة
+
+    // ⚙️ إعدادات Retry و Timeout
+    private const HTTP_TIMEOUT         = 30;  // ثانية
+    private const HTTP_MAX_ATTEMPTS    = 3;   // عدد المحاولات
+    private const HTTP_BACKOFF_BASE    = 1;   // ثواني (1s, 2s, 4s)
+
+    public function __construct()
+    {
+        $this->baseUrl  = rtrim(config('services.ichancy.base_url'), '/');
+        $this->appKey   = config('services.ichancy.app_key');
+        $this->username = config('services.ichancy.agent_username');
+        $this->password = config('services.ichancy.agent_password');
+    }
+
+    // ============================================================
+    //  🎭 Headers موحّدة
+    // ============================================================
+    private function headers(array $extra = []): array
+    {
+        $base = [
+            'accept'         => 'application/json',
+            'content-type'   => 'application/json',
+            'cf-app-content' => $this->appKey,
+            'origin'         => $this->baseUrl,
+            'referer'        => $this->baseUrl . '/',
+            'user-agent'     => 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        ];
+
+        return array_merge($base, $extra);
+    }
+
+    // ============================================================
+    //  🔄 HTTP with Retry — يحل مشكلة timeout
+    // ============================================================
+    private function httpWithRetry(
+        string $method,
+        string $url,
+        array $data,
+        array $headers,
+        ?int $maxAttempts = null,
+    ): ?\Illuminate\Http\Client\Response {
+        $maxAttempts = $maxAttempts ?? self::HTTP_MAX_ATTEMPTS;
+        $lastError = null;
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                $response = $method === 'GET'
+                    ? Http::timeout(self::HTTP_TIMEOUT)->withHeaders($headers)->get($url, $data)
+                    : Http::timeout(self::HTTP_TIMEOUT)->withHeaders($headers)->post($url, $data);
+
+                // ✅ إذا وصل رد (حتى لو 4xx/5xx)، لا نعيد المحاولة
+                //    لأن هذه مسألة منطقية، ليست شبكية
+                return $response;
+            } catch (\Illuminate\Http\Client\ConnectionException $e) {
+                // ❌ فشل شبكي (timeout, DNS, connection refused)
+                $lastError = $e;
+
+                Log::warning("IChancy HTTP attempt {$attempt}/{$maxAttempts} failed", [
+                    'url'   => $url,
+                    'error' => $e->getMessage(),
+                ]);
+
+                if ($attempt < $maxAttempts) {
+                    // Backoff تصاعدي: 1s, 2s, 4s
+                    $sleepSeconds = self::HTTP_BACKOFF_BASE * pow(2, $attempt - 1);
+                    sleep((int) $sleepSeconds);
+                }
+            } catch (\Throwable $e) {
+                // ❌ خطأ آخر (bug, type error, إلخ)
+                $lastError = $e;
+
+                Log::error("IChancy HTTP attempt {$attempt}/{$maxAttempts} exception", [
+                    'url'   => $url,
+                    'error' => $e->getMessage(),
+                ]);
+
+                break; // لا نعيد المحاولة لأخطاء غير شبكية
+            }
+        }
+
+        Log::error('IChancy HTTP all attempts failed', [
+            'url'   => $url,
+            'error' => $lastError?->getMessage(),
+        ]);
+
+        return null;
+    }
+
+    // ============================================================
+    //  🔐 تسجيل الدخول
+    // ============================================================
+    public function signIn(): bool
+    {
+        try {
+            $response = $this->httpWithRetry(
+                'POST',
+                $this->baseUrl . '/global/api/User/signIn',
+                [
+                    'username' => $this->username,
+                    'password' => $this->password,
+                ],
+                $this->headers(),
+            );
+
+            if (! $response) {
+                Log::error('IChancy signIn: no response after retries');
+                return false;
+            }
+
+            if (! $response->successful()) {
+                Log::error('IChancy signIn failed', [
+                    'status' => $response->status(),
+                    'body'   => substr($response->body(), 0, 300),
+                ]);
+                return false;
+            }
+
+            $data = $response->json();
+
+            if (! ($data['status'] ?? false)) {
+                Log::error('IChancy signIn: status=false', ['data' => $data]);
+                return false;
+            }
+
+            $cookies = $response->cookies();
+            $cookieString = $this->buildCookieString($cookies);
+
+            Cache::put(self::CACHE_KEY, $cookieString, self::CACHE_TTL);
+
+            Log::info('IChancy signIn: success', [
+                'cookie_length' => strlen($cookieString),
+            ]);
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('IChancy signIn exception', ['error' => $e->getMessage()]);
+            return false;
+        }
+    }
+
+    // ============================================================
+    //  🍪 بناء Cookie String
+    // ============================================================
+    private function buildCookieString($cookieJar): string
+    {
+        $parts = [];
+
+        foreach ($cookieJar as $cookie) {
+            $name  = $cookie->getName();
+            $value = $cookie->getValue();
+            if ($name && $value) {
+                $parts[] = $name . '=' . $value;
+            }
+        }
+
+        $parts[] = 'languageCode=ar_IQ';
+        $parts[] = 'language=Arabic';
+
+        return implode('; ', $parts);
+    }
+
+    // ============================================================
+    //  📡 GET / POST
+    // ============================================================
+    public function get(string $endpoint, array $params = []): ?array
+    {
+        return $this->request('GET', $endpoint, $params);
+    }
+
+    public function post(string $endpoint, array $data = []): ?array
+    {
+        return $this->request('POST', $endpoint, $data);
+    }
+
+    // ============================================================
+    //  🔧 Request — مع Rate Limit + Retry + Timeout
+    // ============================================================
+    private function request(string $method, string $endpoint, array $data = []): ?array
+    {
+        // ✅ 1. تأخير بسيط بين الطلبات (يمنع Rate Limit)
+        $lastRequest = Cache::get('ichancy_last_request_at', 0);
+        $timeSince   = microtime(true) - $lastRequest;
+
+        if ($timeSince < 0.3) {
+            usleep((int) ((0.3 - $timeSince) * 1_000_000));
+        }
+
+        Cache::put('ichancy_last_request_at', microtime(true), 60);
+
+        // ✅ 2. تأكد من الـ session
+        if (! Cache::has(self::CACHE_KEY)) {
+            if (! $this->signIn()) {
+                return null;
+            }
+        }
+
+        $cookie = Cache::get(self::CACHE_KEY);
+        $url = $this->baseUrl . '/global/api/' . ltrim($endpoint, '/');
+
+        try {
+            $headers = $this->headers(['cookie' => $cookie]);
+
+            // ✅ 3. الطلب مع Retry
+            $response = $this->httpWithRetry($method, $url, $data, $headers);
+
+            if (! $response) {
+                return null;
+            }
+
+            // ✅ 4. إذا الجلسة انتهت أو Cloudflare حجب
+            if (in_array($response->status(), [401, 403], true)) {
+                Log::info('IChancy session expired or blocked, retrying', [
+                    'status' => $response->status(),
+                    'url'    => $url,
+                ]);
+
+                Cache::forget(self::CACHE_KEY);
+
+                sleep(1);
+
+                if (! $this->signIn()) {
+                    return null;
+                }
+
+                $cookie = Cache::get(self::CACHE_KEY);
+                $headers['cookie'] = $cookie;
+
+                $response = $this->httpWithRetry($method, $url, $data, $headers);
+
+                if (! $response) {
+                    return null;
+                }
+            }
+
+            if (! $response->successful()) {
+                Log::warning('IChancy request failed', [
+                    'url'    => $url,
+                    'status' => $response->status(),
+                    'body'   => substr($response->body(), 0, 300),
+                ]);
+                return null;
+            }
+
+            // ✅ 5. تأكد إنه JSON (Cloudflare يرجّع HTML أحياناً)
+            $contentType = $response->header('Content-Type');
+
+            if ($contentType && ! str_contains($contentType, 'json')) {
+                Log::warning('IChancy returned non-JSON (Cloudflare block?)', [
+                    'url'          => $url,
+                    'content_type' => $contentType,
+                ]);
+                return null;
+            }
+
+            return $response->json();
+        } catch (\Throwable $e) {
+            Log::error('IChancy request exception', [
+                'url'   => $url,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    // ============================================================
+    //  💰 رصيد الوكيل
+    // ============================================================
+    public function getAgentWallet(): ?array
+    {
+        return $this->post('Agent/getAgentWallet');
+    }
+
+    // ============================================================
+    //  💰 كل محافظ الوكيل
+    // ============================================================
+    public function getAgentAllWallets(): ?array
+    {
+        return $this->post('Agent/getAgentAllWallets');
+    }
+
+    // ============================================================
+    //  👥 قائمة اللاعبين
+    // ============================================================
+    public function getPlayers(int $start = 0, int $limit = 25, array $filter = []): ?array
+    {
+        return $this->post('Player/getPlayersForCurrentAgent', [
+            'start'  => $start,
+            'limit'  => $limit,
+            'filter' => empty($filter) ? new \stdClass() : $filter,
+        ]);
+    }
+
+    // ============================================================
+    //  🔍 بحث عن لاعب بالاسم
+    //  (مع Pagination — يبحث في كل الصفحات حتى 5000 لاعب)
+    // ============================================================
+    public function findPlayerByUsername(string $username): ?array
+    {
+        $targetLower = strtolower($username);
+        $pageSize    = 100;   // ✅ قللنا من 500 إلى 100 لتسريع الطلب
+        $maxPages    = 50;    // حد أقصى: 50 صفحة × 100 = 5000 لاعب
+        $start       = 0;
+
+        for ($page = 0; $page < $maxPages; $page++) {
+            $result = $this->post('Player/getPlayersForCurrentAgent', [
+                'start'  => $start,
+                'limit'  => $pageSize,
+                'filter' => new \stdClass(),
+            ]);
+
+            if (! $result || ! ($result['status'] ?? false)) {
+                return null;
+            }
+
+            $records = $result['result']['records'] ?? [];
+
+            // لا توجد سجلات → انتهت القائمة
+            if (empty($records)) {
+                return null;
+            }
+
+            // ✅ ابحث في هذه الصفحة
+            foreach ($records as $p) {
+                if (
+                    isset($p['username'])
+                    && strtolower($p['username']) === $targetLower
+                ) {
+                    return $p;
+                }
+            }
+
+            // إذا عدد السجلات < pageSize → هذه آخر صفحة
+            if (count($records) < $pageSize) {
+                return null;
+            }
+
+            $start += $pageSize;
+        }
+
+        return null;
+    }
+
+    // ============================================================
+    //  💰 رصيد لاعب
+    // ============================================================
+    public function getPlayerBalance(string $playerId): ?float
+    {
+        $result = $this->post('Player/getPlayerBalanceById', [
+            'playerId' => $playerId,
+        ]);
+
+        if (! $result || ! ($result['status'] ?? false)) {
+            return null;
+        }
+
+        $balances = $result['result'] ?? [];
+
+        // ✅ إذا ما فيه أرصدة → 0 (مو null)
+        if (empty($balances)) {
+            return 0.0;
+        }
+
+        foreach ($balances as $b) {
+            if (($b['main'] ?? false) === true) {
+                return (float) $b['balance'];
+            }
+        }
+
+        // ✅ إذا ما فيه "main" → خذ أول واحد
+        return (float) ($balances[0]['balance'] ?? 0);
+    }
+
+    // ============================================================
+    //  ➕ تسجيل لاعب جديد
+    // ============================================================
+    public function registerPlayer(
+        string $login,
+        string $password,
+        ?string $email = null,
+        string $currency = 'NSP',
+    ): ?array {
+        $affiliateId = $this->getAffiliateId();
+
+        if (! $affiliateId) {
+            Log::error('IChancy registerPlayer: cannot determine affiliateId');
+            return null;
+        }
+
+        if (! $email) {
+            $email = $this->generatePlayerEmail($login);
+        }
+
+        return $this->post('Player/registerPlayer', [
+            'player' => [
+                'login'    => $login,
+                'password' => $password,
+                'email'    => $email,
+                'parentId' => (string) $affiliateId,
+            ],
+        ]);
+    }
+
+    // ============================================================
+    //  ➕ تسجيل لاعب + جلب بياناته (مع Retry)
+    // ============================================================
+    public function registerAndGetPlayer(
+        string $login,
+        string $password,
+        ?string $email = null,
+    ): ?array {
+        // ✅ 1. سجّل اللاعب
+        $registerResult = $this->registerPlayer($login, $password, $email);
+
+        if (! $registerResult || ! ($registerResult['status'] ?? false)) {
+            Log::warning('IChancy registerAndGetPlayer: registration failed', [
+                'login'  => $login,
+                'result' => $registerResult,
+            ]);
+            return null;
+        }
+
+        // ✅ 2. ابحث عن اللاعب (مع محاولات متعددة — لأن السيرفر قد يتأخر)
+        $maxFindAttempts = 3;
+        $player = null;
+
+        for ($attempt = 1; $attempt <= $maxFindAttempts; $attempt++) {
+            // انتظر قبل كل محاولة: 2s, 4s, 6s
+            sleep(2 * $attempt);
+
+            $player = $this->findPlayerByUsername($login);
+
+            if ($player) {
+                Log::info("IChancy registerAndGetPlayer: found on attempt {$attempt}");
+                break;
+            }
+
+            Log::warning("IChancy registerAndGetPlayer: not found, attempt {$attempt}/{$maxFindAttempts}", [
+                'login' => $login,
+            ]);
+        }
+
+        if (! $player) {
+            Log::warning('IChancy registerAndGetPlayer: player not found after all attempts', [
+                'login' => $login,
+            ]);
+            return null;
+        }
+
+        Log::info('IChancy registerAndGetPlayer: success', [
+            'login'     => $login,
+            'player_id' => $player['playerId'] ?? null,
+        ]);
+
+        return $player;
+    }
+
+    // ============================================================
+    //  📧 توليد إيميل تلقائي
+    // ============================================================
+    private function generatePlayerEmail(string $login): string
+    {
+        $clean = preg_replace('/[^a-zA-Z0-9._-]/', '', $login);
+        $clean = strtolower($clean);
+
+        $domain = config('services.ichancy.email_domain', 'vexora.bot');
+
+        return $clean . '@' . $domain;
+    }
+
+    // ============================================================
+    //  🆔 جلب affiliateId
+    // ============================================================
+    private function getAffiliateId(): ?string
+    {
+        $cached = Cache::get('ichancy_affiliate_id');
+        if ($cached) {
+            return $cached;
+        }
+
+        $result = $this->post('Affiliate/getUsersList', [
+            'start'  => 0,
+            'limit'  => 1,
+            'filter' => new \stdClass(),
+        ]);
+
+        if (! $result || ! ($result['status'] ?? false)) {
+            return null;
+        }
+
+        $records = $result['result']['records'] ?? [];
+        $affiliateId = $records[0]['affiliateId'] ?? null;
+
+        if ($affiliateId) {
+            Cache::put('ichancy_affiliate_id', $affiliateId, now()->addHours(6));
+        }
+
+        return $affiliateId ? (string) $affiliateId : null;
+    }
+
+    // ============================================================
+    //  📥 إيداع للاعب (شحن)
+    // ============================================================
+    public function depositToPlayer(
+        string $playerId,
+        float $amount,
+        string $currency = 'NSP',
+        ?string $note = null,
+    ): ?array {
+        return $this->post('Player/depositToPlayer', [
+            'playerId' => $playerId,
+            'amount'   => $amount,
+            'currency' => $currency,
+            'note'     => $note ?? 'شحن من البوت',
+        ]);
+    }
+
+    // ============================================================
+    //  📤 سحب من اللاعب
+    // ============================================================
+    public function withdrawFromPlayer(
+        string $playerId,
+        float $amount,
+        string $currency = 'NSP',
+        ?string $note = null,
+    ): ?array {
+        return $this->post('Player/withdrawFromPlayer', [
+            'playerId' => $playerId,
+            'amount'   => $amount,
+            'currency' => $currency,
+            'note'     => $note ?? 'سحب من البوت',
+        ]);
+    }
+
+    // ============================================================
+    //  🔑 تغيير كلمة مرور لاعب
+    // ============================================================
+    public function changePlayerPassword(string $playerId, string $newPassword): ?array
+    {
+        return $this->post('Player/changePlayerPassword', [
+            'playerId' => $playerId,
+            'password' => $newPassword,
+        ]);
+    }
+
+    // ============================================================
+    //  🗑 حذف لاعب
+    // ============================================================
+    public function deletePlayer(string $playerId): ?array
+    {
+        return $this->post('Player/deletePlayer', [
+            'playerId' => $playerId,
+        ]);
+    }
+
+    // ============================================================
+    //  ♻️ استرجاع لاعب
+    // ============================================================
+    public function restorePlayer(string $playerId): ?array
+    {
+        return $this->post('Player/restorePlayer', [
+            'playerId' => $playerId,
+        ]);
+    }
+
+    // ============================================================
+    //  🧪 اختبار endpoints
+    // ============================================================
+    public function testEndpoints(): array
+    {
+        $endpoints = [
+            'Player/getPlayersForCurrentAgent',
+            'Agent/getAgentWallet',
+            'Agent/getAgentAllWallets',
+            'UserNotification/getAllUserNotifications',
+        ];
+
+        $results = [];
+
+        foreach ($endpoints as $ep) {
+            $r = $this->post($ep, ['start' => 0, 'limit' => 5, 'filter' => new \stdClass()]);
+            $results[$ep] = [
+                'status'         => $r['status'] ?? null,
+                'result_preview' => is_array($r['result'] ?? null)
+                    ? substr(json_encode($r['result'], JSON_UNESCAPED_UNICODE), 0, 200)
+                    : ($r['result'] ?? null),
+            ];
+        }
+
+        return $results;
+    }
+}
+
+
+===== <?php
+
+namespace App\Services\IChancy;
+
+use App\Models\IChancyAccount;
+use App\Models\User;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+
+class IChancyAccountService
+{
+    public function __construct(
+        private readonly IChancyService $ichancy,
+    ) {}
+
+    // ============================================================
+    //  ➕ إنشاء حساب في IChancy
+    // ============================================================
+    public function createForUser(User $user, string $plainPassword): ?IChancyAccount
+    {
+        if ($user->ichancyAccount) {
+            return $user->ichancyAccount;
+        }
+
+        try {
+            $player = $this->ichancy->registerAndGetPlayer(
+                login: $user->username,
+                password: $plainPassword,
+            );
+
+            if (! $player) {
+                Log::warning('IChancyAccountService: registration failed', [
+                    'user_id'  => $user->id,
+                    'username' => $user->username,
+                ]);
+                return null;
+            }
+
+            $account = IChancyAccount::create([
+                'user_id'                    => $user->id,
+                'ichancy_player_id'          => (string) ($player['playerId'] ?? ''),
+                'ichancy_username'           => $user->username,
+                'ichancy_password_encrypted' => encrypt($plainPassword),
+                'currency'                   => $player['currency'] ?? 'NSP',
+                'balance_cache'              => 0,
+                'is_active'                  => true,
+            ]);
+
+            Log::info('IChancyAccountService: account created', [
+                'user_id'   => $user->id,
+                'player_id' => $player['playerId'] ?? null,
+            ]);
+
+            return $account;
+        } catch (\Throwable $e) {
+            Log::error('IChancyAccountService: exception', [
+                'user_id' => $user->id,
+                'error'   => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    // ============================================================
+    //  💰 مزامنة الرصيد
+    // ============================================================
+    public function syncBalance(IChancyAccount $account): bool
+    {
+        $balance = $this->ichancy->getPlayerBalance($account->ichancy_player_id);
+
+        if ($balance === null) {
+            return false;
+        }
+
+        $account->update([
+            'balance_cache'  => $balance,
+            'last_synced_at' => now(),
+        ]);
+
+        return true;
+    }
+
+    // ============================================================
+    //  💰 جلب رصيد المستخدم (Cache 5 دقائق)
+    // ============================================================
+    public function getBalanceForUser(User $user, int $cacheSeconds = 300): ?array
+    {
+        $account = $user->ichancyAccount;
+
+        if (! $account || ! $account->ichancy_player_id) {
+            return null;
+        }
+
+        $cacheKey = 'ichancy_balance_user_' . $user->id;
+
+        // ✅ Cache
+        if ($cacheSeconds > 0) {
+            $cached = Cache::get($cacheKey);
+            if (is_array($cached)) {
+                return $cached;
+            }
+        }
+
+        try {
+            $balance = $this->ichancy->getPlayerBalance($account->ichancy_player_id);
+
+            if ($balance === null) {
+                // ✅ إذا فشل الجلب → رجّع آخر قيمة مخزّنة بدل null
+                if ($account->last_synced_at) {
+                    return [
+                        'balance'   => (float) $account->balance_cache,
+                        'currency'  => $account->currency ?? 'NSP',
+                        'player_id' => $account->ichancy_player_id,
+                        'username'  => $account->ichancy_username,
+                        'stale'     => true,
+                    ];
+                }
+                return null;
+            }
+
+            $result = [
+                'balance'   => (float) $balance,
+                'currency'  => $account->currency ?? 'NSP',
+                'player_id' => $account->ichancy_player_id,
+                'username'  => $account->ichancy_username,
+            ];
+
+            // ✅ حدّث الـ cache في DB
+            $account->update([
+                'balance_cache'  => $result['balance'],
+                'last_synced_at' => now(),
+            ]);
+
+            if ($cacheSeconds > 0) {
+                Cache::put($cacheKey, $result, now()->addSeconds($cacheSeconds));
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            Log::warning('IChancyAccountService: getBalanceForUser failed', [
+                'user_id' => $user->id,
+                'error'   => $e->getMessage(),
+            ]);
+
+            // ✅ إذا فشل → رجّع آخر قيمة مخزّنة
+            if ($account->last_synced_at) {
+                return [
+                    'balance'   => (float) $account->balance_cache,
+                    'currency'  => $account->currency ?? 'NSP',
+                    'player_id' => $account->ichancy_player_id,
+                    'username'  => $account->ichancy_username,
+                    'stale'     => true,
+                ];
+            }
+
+            return null;
+        }
+    }
+
+    // ============================================================
+    //  🔍 هل المستخدم مربوط؟
+    // ============================================================
+    public function hasAccount(User $user): bool
+    {
+        return $user->ichancyAccount()->exists();
+    }
+}
+
+
+===== <?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class IChancyAccount extends Model
+{
+    protected $table = 'ichancy_accounts';
+
+    protected $fillable = [
+        'user_id',
+        'ichancy_player_id',
+        'ichancy_username',
+        'ichancy_password_encrypted',
+        'currency',
+        'balance_cache',
+        'last_synced_at',
+        'is_active',
+    ];
+
+    protected $casts = [
+        'balance_cache'  => 'decimal:2',
+        'last_synced_at' => 'datetime',
+        'is_active'      => 'boolean',
+    ];
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function getPlainPasswordAttribute(): ?string
+    {
+        try {
+            return decrypt($this->ichancy_password_encrypted);
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+}
+
+
+===== <?php
+
+namespace App\Console\Commands;
+
+use App\Models\Transaction;
+use App\Models\User;
+use App\Services\NotificationService;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+use SergiX44\Nutgram\Nutgram;
+
+class NotifyPendingWithdraws extends Command
+{
+    protected $signature = 'notify:pending
+                            {--hours=6 : الحد الأدنى لعمر الطلب}
+                            {--force : إرسال حتى لو لا توجد طلبات}';
+
+    protected $description = 'تذكير الأدمن بالسحوبات المعلقة';
+
+    public function handle(): int
+    {
+        $hours = (int) ($this->option('hours') ?? 6);
+        $cutoff = now()->subHours($hours);
+
+        $this->info("🔔 فحص السحوبات المعلقة (أقدم من {$hours} ساعة)...");
+        $this->newLine();
+
+        $pending = Transaction::pending()
+            ->withdrawals()
+            ->where('created_at', '<', $cutoff)
+            ->with('user')
+            ->orderBy('created_at')
+            ->get();
+
+        if ($pending->isEmpty()) {
+            $this->info('✅ لا توجد سحوبات معلقة.');
+            return self::SUCCESS;
+        }
+
+        $this->warn("⚠️  عدد السحوبات المعلقة: {$pending->count()}");
+        $this->newLine();
+
+        // ─── جدول ───
+        $rows = $pending->map(fn($tx) => [
+            '#' . $tx->id,
+            $tx->user?->username ?? 'غير معروف',
+            number_format((float) $tx->amount_from, 2) . ' ' . $tx->from_currency,
+            $tx->created_at->diffForHumans(),
+        ])->toArray();
+
+        $this->table(
+            ['المعرف', 'المستخدم', 'المبلغ', 'منذ'],
+            $rows,
+        );
+
+        $this->newLine();
+
+        // ─── إرسال إشعار للأدمن ───
+        $this->sendNotification($pending);
+
+        return self::SUCCESS;
+    }
+
+    // ============================================================
+    //  إرسال الإشعار
+    // ============================================================
+    private function sendNotification($pending): void
+    {
+        try {
+            $bot = app(Nutgram::class);
+            $totalNsp = $pending->where('from_currency', 'NSP')->sum('amount_from');
+            $totalUsd = $pending->where('from_currency', 'USD')->sum('amount_from');
+
+            $text = implode("\n", [
+                '🔔 <b>تذكير: سحوبات معلقة</b>',
+                '━━━━━━━━━━━━━━━━━━',
+                '',
+                '⚠️ <b>لديك ' . $pending->count() . ' سحب معلق</b>',
+                '',
+                '💰 <b>الإجمالي:</b>',
+                '├── NSP: <b>' . number_format((float) $totalNsp, 2) . '</b>',
+                '└── USD: <b>' . number_format((float) $totalUsd, 2) . '</b>',
+                '',
+                '⏰ <b>أقدم طلب:</b>',
+                '└── منذ ' . $pending->first()->created_at->diffForHumans(),
+                '',
+                '━━━━━━━━━━━━━━━━━━',
+                '',
+                '💡 <i>يرجى معالجة الطلبات في أقرب وقت</i>',
+            ]);
+
+            // ─── إرسال لكل أدمن ───
+            $admins = User::where('is_admin', true)
+                ->where('is_active', true)
+                ->whereNotNull('telegram_id')
+                ->get();
+
+            $sent = 0;
+
+            foreach ($admins as $admin) {
+                try {
+                    $bot->sendMessage(
+                        text: $text,
+                        chat_id: $admin->telegram_id,
+                        parse_mode: 'HTML',
+                    );
+                    $sent++;
+                } catch (\Throwable $e) {
+                    Log::warning('Admin notification failed', [
+                        'admin_id' => $admin->id,
+                        'error'    => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            // ─── إرسال لقناة المعاملات ───
+            try {
+                app(NotificationService::class)->notifyTransactionsChannel($bot, $text);
+            } catch (\Throwable $e) {
+            }
+
+            $this->info("✅ تم إرسال الإشعار لـ {$sent} أدمن.");
+
+            Log::info('Pending withdraws notified', [
+                'count' => $pending->count(),
+                'admins_notified' => $sent,
+            ]);
+        } catch (\Throwable $e) {
+            $this->error('❌ فشل الإرسال: ' . $e->getMessage());
+            Log::error('Notify pending failed', ['error' => $e->getMessage()]);
+        }
+    }
+}
+
+
+===== <?php
+
+namespace App\Services;
+
+use App\Models\DepositMethod;
+use App\Models\User;
+use Illuminate\Support\Facades\Log;
+use SergiX44\Nutgram\Nutgram;
+
+class NotificationService
+{
+    // ============================================================
+    //  🎯 القنوات الثلاث
+    // ============================================================
+
+    /**
+     * قناة المستخدمين الجدد.
+     */
+    public function notifyUsersChannel(Nutgram $bot, string $text): bool
+    {
+        return $this->sendToChannel(
+            $bot,
+            config('services.telegram.users_channel_id'),
+            $text,
+        );
+    }
+
+    /**
+     * قناة المالية (إيداع، سحب، تحويلات).
+     */
+    public function notifyTransactionsChannel(Nutgram $bot, string $text): bool
+    {
+        return $this->sendToChannel(
+            $bot,
+            config('services.telegram.transactions_channel_id'),
+            $text,
+        );
+    }
+
+    /**
+     * قناة عامة (النظام، الإعدادات).
+     */
+    public function notifyGeneralChannel(Nutgram $bot, string $text): bool
+    {
+        return $this->sendToChannel(
+            $bot,
+            config('services.telegram.general_channel_id'),
+            $text,
+        );
+    }
+
+    /**
+     * إرسال إلى قناة محددة.
+     */
+    protected function sendToChannel(Nutgram $bot, ?string $channelId, string $text): bool
+    {
+        if (empty($channelId)) {
+            Log::warning('NotificationService: Channel ID is empty');
+            return false;
+        }
+
+        try {
+            $bot->sendMessage(
+                text: $text,
+                chat_id: $channelId,
+                parse_mode: 'HTML',
+                disable_web_page_preview: true,
+            );
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::warning('NotificationService: Failed to send to channel', [
+                'channel_id' => $channelId,
+                'error'      => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    // ============================================================
+    //  📢 إشعارات الأدمن (مباشر)
+    // ============================================================
+
+    public function notifyAdmins(Nutgram $bot, string $text): void
+    {
+        $admins = User::where('is_admin', true)
+            ->where('is_active', true)
+            ->get();
+
+        foreach ($admins as $admin) {
+            $this->send($bot, $admin, $text);
+        }
+    }
+
+    public function notifySuperAdmins(Nutgram $bot, string $text): void
+    {
+        $admins = User::where('is_admin', true)
+            ->where('is_super_admin', true)
+            ->where('is_active', true)
+            ->get();
+
+        foreach ($admins as $admin) {
+            $this->send($bot, $admin, $text);
+        }
+    }
+
+    public function send(Nutgram $bot, User $user, string $text): bool
+    {
+        if ($user->telegram_id === null) {
+            return false;
+        }
+
+        try {
+            $bot->sendMessage(
+                text: $text,
+                chat_id: $user->telegram_id,
+                parse_mode: 'HTML',
+            );
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::warning('NotificationService: send failed', [
+                'user_id' => $user->id,
+                'error'   => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    // ============================================================
+    //  🆕 إشعار قناة المستخدمين (تسجيل جديد)
+    // ============================================================
+
+    public function sendWelcomeToChannel(Nutgram $bot, User $user, string $plainPassword): void
+    {
+        $botName = \App\Models\Setting::get('bot_name_prefix', 'VEXORA');
+        $telegramLink = '<a href="tg://user?id=' . $user->telegram_id . '">'
+            . '<code>' . $user->telegram_id . '</code></a>';
+
+        $text = implode("\n", [
+            '🆕 <b>مستخدم جديد في ' . $botName . '</b>',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '👤 <b>الاسم:</b> ' . htmlspecialchars($user->full_name, ENT_QUOTES, 'UTF-8'),
+            '',
+            '📛 <b>اسم المستخدم:</b>',
+            '└── <code>' . htmlspecialchars($user->username, ENT_QUOTES, 'UTF-8') . '</code>',
+            '',
+            '🔑 <b>كلمة المرور:</b>',
+            '└── <code>' . htmlspecialchars($plainPassword, ENT_QUOTES, 'UTF-8') . '</code>',
+            '',
+            '🆔 <b>معرف الحساب:</b>',
+            '└── <code>#' . $user->id . '</code>',
+            '',
+            '📱 <b>Telegram ID:</b>',
+            '└── ' . $telegramLink,
+            '',
+            '📅 <b>تاريخ التسجيل:</b>',
+            '└── ' . now()->format('Y-m-d H:i:s'),
+        ]);
+
+        $this->notifyUsersChannel($bot, $text);
+    }
+
+    // ============================================================
+    //  🎯 إشعار ترحيب للمستخدم
+    // ============================================================
+
+    public function sendWelcomeToUser(Nutgram $bot, User $user, string $plainPassword): void
+    {
+        $botName = \App\Models\Setting::get('bot_name_prefix', 'VEXORA');
+        $botUsername = config('services.telegram.bot_username', 'VexoraBot');
+        $botLink = "https://t.me/{$botUsername}";
+
+        $text = implode("\n", [
+            '🎉 <b>مرحباً بك في ' . $botName . '</b>',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '✅ <b>تم إنشاء حسابك بنجاح!</b>',
+            '',
+            '📋 <b>معلومات حسابك:</b>',
+            '├── 👤 <b>اسم المستخدم:</b>',
+            '│   <code>' . htmlspecialchars($user->username, ENT_QUOTES, 'UTF-8') . '</code>',
+            '│',
+            '├── 🔑 <b>كلمة المرور:</b>',
+            '│   <code>' . htmlspecialchars($plainPassword, ENT_QUOTES, 'UTF-8') . '</code>',
+            '│',
+            '├── 📱 <b>Telegram ID:</b>',
+            '│   <code>' . $user->telegram_id . '</code>',
+            '│',
+            '└── 🆔 <b>معرف الحساب:</b>',
+            '    <code>#' . $user->id . '</code>',
+            '',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '⚠️ <b>مهم جدًا:</b>',
+            '• احتفظ بهذه المعلومات في مكان آمن',
+            '• لا تشارك كلمة المرور مع أي شخص',
+            '',
+            '🔗 <b>رابط البوت:</b>',
+            $botLink,
+            '',
+            '💡 <b>للدخول مستقبلاً:</b>',
+            'أرسل /start',
+        ]);
+
+        $this->send($bot, $user, $text);
+    }
+
+    // ============================================================
+    //  👤 Helpers — Telegram Info Line
+    // ============================================================
+
+    public function telegramIdLine(User $user): string
+    {
+        if (empty($user->telegram_id)) {
+            return '<code>—</code> (غير متوفر)';
+        }
+
+        $id   = $user->telegram_id;
+        $link = "tg://user?id={$id}";
+
+        return '<a href="' . $link . '"><code>' . $id . '</code></a>';
+    }
+
+    public function telegramInfoLine(User $user): string
+    {
+        if (empty($user->telegram_id)) {
+            return '📱 <b>Telegram:</b> — (غير متوفر)';
+        }
+
+        $id       = $user->telegram_id;
+        $username = $user->telegram_username;
+        $link     = "tg://user?id={$id}";
+
+        $line = '📱 <b>Telegram:</b> <a href="' . $link . '">';
+
+        if ($username) {
+            $line .= '@' . htmlspecialchars($username, ENT_QUOTES, 'UTF-8');
+        } else {
+            $line .= 'مستخدم';
+        }
+
+        $line .= '</a> <code>(' . $id . ')</code>';
+
+        return $line;
+    }
+
+    // ============================================================
+    //  📢 إشعارات عامة (للقناة العامة + Broadcast)
+    // ============================================================
+
+    public function notifyMaintenance(string $message): void
+    {
+        $text = implode("\n", [
+            '🔧 <b>إشعار صيانة</b>',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            $message,
+            '',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '🙏 نعتذر عن الإزعاج',
+        ]);
+
+        // ✅ إرسال للقناة العامة
+        try {
+            $bot = app(Nutgram::class);
+            $this->notifyGeneralChannel($bot, $text);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to notify general channel about maintenance', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // ✅ إرسال Broadcast للمستخدمين
+        \App\Jobs\BroadcastMessageJob::dispatch('all', $text, 0);
+    }
+
+    public function notifyMaintenanceEnded(): void
+    {
+        $text = implode("\n", [
+            '✅ <b>انتهت الصيانة</b>',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '🎉 البوت يعمل الآن بشكل طبيعي.',
+            '',
+            '💡 استخدم /start للبدء.',
+        ]);
+
+        // ✅ إرسال للقناة العامة
+        try {
+            $bot = app(Nutgram::class);
+            $this->notifyGeneralChannel($bot, $text);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to notify general channel about maintenance ended', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // ✅ إرسال Broadcast للمستخدمين
+        \App\Jobs\BroadcastMessageJob::dispatch('all', $text, 0);
+    }
+
+    // ============================================================
+    //  🎭 إشعار تغيير الدور
+    // ============================================================
+
+    public function notifyRoleChange(
+        Nutgram $bot,
+        User $user,
+        string $fromRole,
+        string $toRole,
+        User $by,
+    ): void {
+        $isPromotion = $this->isPromotion($fromRole, $toRole);
+
+        $icon  = $isPromotion ? '🎉' : '⚠️';
+        $title = $isPromotion ? 'تم ترقيتك' : 'تم تخفيضك';
+
+        // ✅ إشعار للمستخدم
+        $this->send($bot, $user, implode("\n", [
+            $icon . ' <b>' . $title . '</b>',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '📌 <b>التغيير:</b>',
+            '├── من: ' . $this->roleLabel($fromRole),
+            '└── إلى: ' . $this->roleLabel($toRole),
+            '',
+            '👮 <b>بواسطة:</b> <code>' . $by->username . '</code>',
+            '',
+            '📅 ' . now()->format('Y-m-d H:i'),
+        ]));
+    }
+
+    private function isPromotion(string $from, string $to): bool
+    {
+        $levels = [
+            User::ROLE_USER        => 0,
+            User::ROLE_ADMIN       => 1,
+            User::ROLE_SUPER_ADMIN => 2,
+        ];
+
+        return ($levels[$to] ?? 0) > ($levels[$from] ?? 0);
+    }
+
+    private function roleLabel(string $role): string
+    {
+        return match ($role) {
+            User::ROLE_SUPER_ADMIN => '👑 مشرف أساسي',
+            User::ROLE_ADMIN       => '🛡️ أدمن عادي',
+            User::ROLE_USER        => '👤 مستخدم',
+            default                => '❓',
+        };
+    }
+
+    // ============================================================
+    //  📢 إشعارات جماعية (عبر Job)
+    // ============================================================
+
+    public function notifyAllUsers(string $text): int
+    {
+        \App\Jobs\BroadcastMessageJob::dispatch('all', $text, 0);
+
+        return User::whereNotNull('telegram_id')->count();
+    }
+
+    // ============================================================
+    //  💰 إشعارات تغيير طرق الإيداع — للقناة المالية
+    // ============================================================
+
+    /**
+     * إشعار قناة Transactions عن تغيير طريقة إيداع.
+     *
+     * @param  string  $action  create|update|delete|activate|deactivate
+     */
+    public function notifyDepositMethodChange(
+        Nutgram $bot,
+        string $action,
+        DepositMethod|array $method,
+        ?int $adminId = null,
+        ?array $changes = null,
+    ): void {
+        $method = is_array($method)
+            ? (object) $method
+            : $method;
+
+        $admin = $adminId ? User::find($adminId) : null;
+        $adminName = $admin
+            ? '<code>' . htmlspecialchars($admin->username, ENT_QUOTES, 'UTF-8') . '</code>'
+            : '<code>—</code>';
+
+        $icon = match ($action) {
+            'create'     => '🆕',
+            'update'     => '✏️',
+            'delete'     => '🗑️',
+            'activate'   => '🟢',
+            'deactivate' => '🔴',
+            default      => 'ℹ️',
+        };
+
+        $title = match ($action) {
+            'create'     => 'إضافة طريقة إيداع جديدة',
+            'update'     => 'تعديل طريقة إيداع',
+            'delete'     => 'حذف طريقة إيداع',
+            'activate'   => 'تفعيل طريقة إيداع',
+            'deactivate' => 'تعطيل طريقة إيداع',
+            default      => 'تحديث طريقة إيداع',
+        };
+
+        $lines = [
+            $icon . ' <b>' . $title . '</b>',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '💳 <b>الاسم:</b> ' . htmlspecialchars((string) ($method->name ?? '—'), ENT_QUOTES, 'UTF-8'),
+            '🔖 <b>الكود:</b> <code>' . htmlspecialchars((string) ($method->code ?? '—'), ENT_QUOTES, 'UTF-8') . '</code>',
+            '💱 <b>العملة:</b> ' . htmlspecialchars((string) ($method->currency ?? '—'), ENT_QUOTES, 'UTF-8'),
+        ];
+
+        if (! empty($method->min_amount) || ! empty($method->max_amount)) {
+            $lines[] = '📊 <b>الحدود:</b> '
+                . number_format((float) ($method->min_amount ?? 0), 2)
+                . ' → '
+                . number_format((float) ($method->max_amount ?? 0), 2);
+        }
+
+        if ($changes && is_array($changes)) {
+            $lines[] = '';
+            $lines[] = '📝 <b>التغييرات:</b>';
+            foreach ($changes as $field => $change) {
+                $old = is_array($change) ? ($change['old'] ?? '—') : '—';
+                $new = is_array($change) ? ($change['new'] ?? '—') : '—';
+
+                if (is_bool($old)) {
+                    $old = $old ? '✅' : '❌';
+                }
+                if (is_bool($new)) {
+                    $new = $new ? '✅' : '❌';
+                }
+
+                $lines[] = '├── <b>' . htmlspecialchars((string) $field, ENT_QUOTES, 'UTF-8') . ':</b>';
+                $lines[] = '│   <s>' . htmlspecialchars((string) $old, ENT_QUOTES, 'UTF-8') . '</s>';
+                $lines[] = '│   → <b>' . htmlspecialchars((string) $new, ENT_QUOTES, 'UTF-8') . '</b>';
+            }
+        }
+
+        $lines[] = '';
+        $lines[] = '👮 <b>بواسطة:</b> ' . $adminName;
+        $lines[] = '📅 ' . now()->format('Y-m-d H:i');
+
+        $this->notifyTransactionsChannel($bot, implode("\n", $lines));
+    }
+
+    /**
+     * إشعار كل المستخدمين عن تغيير طريقة إيداع (Broadcast).
+     */
+    public function notifyAllUsersDepositMethodChange(
+        Nutgram $bot,
+        string $action,
+        DepositMethod|array $method,
+        ?array $changes = null,
+    ): int {
+        $method = is_array($method)
+            ? (object) $method
+            : $method;
+
+        $icon = match ($action) {
+            'create'     => '🆕',
+            'update'     => '✏️',
+            'delete'     => '🗑️',
+            'activate'   => '🟢',
+            'deactivate' => '🔴',
+            default      => 'ℹ️',
+        };
+
+        $title = match ($action) {
+            'create'     => 'طريقة إيداع جديدة متاحة',
+            'update'     => 'تحديث طريقة إيداع',
+            'delete'     => 'تم حذف طريقة إيداع',
+            'activate'   => 'تم تفعيل طريقة إيداع',
+            'deactivate' => 'تم تعطيل طريقة إيداع',
+            default      => 'تحديث طرق الإيداع',
+        };
+
+        $lines = [
+            $icon . ' <b>' . $title . '</b>',
+            '━━━━━━━━━━━━━━━━━━',
+            '',
+            '💳 <b>الاسم:</b> ' . htmlspecialchars((string) ($method->name ?? '—'), ENT_QUOTES, 'UTF-8'),
+            '💱 <b>العملة:</b> ' . htmlspecialchars((string) ($method->currency ?? '—'), ENT_QUOTES, 'UTF-8'),
+        ];
+
+        if (! empty($method->min_amount) || ! empty($method->max_amount)) {
+            $lines[] = '📊 <b>الحدود:</b> '
+                . number_format((float) ($method->min_amount ?? 0), 2)
+                . ' → '
+                . number_format((float) ($method->max_amount ?? 0), 2);
+        }
+
+        if ($changes && is_array($changes)) {
+            $lines[] = '';
+            $lines[] = '📝 <b>التغييرات:</b>';
+            foreach ($changes as $field => $change) {
+                $old = is_array($change) ? ($change['old'] ?? '—') : '—';
+                $new = is_array($change) ? ($change['new'] ?? '—') : '—';
+
+                if (is_bool($old)) {
+                    $old = $old ? '✅' : '❌';
+                }
+                if (is_bool($new)) {
+                    $new = $new ? '✅' : '❌';
+                }
+
+                $lines[] = '├── <b>' . htmlspecialchars((string) $field, ENT_QUOTES, 'UTF-8') . ':</b>';
+                $lines[] = '│   <s>' . htmlspecialchars((string) $old, ENT_QUOTES, 'UTF-8') . '</s>';
+                $lines[] = '│   → <b>' . htmlspecialchars((string) $new, ENT_QUOTES, 'UTF-8') . '</b>';
+            }
+        }
+
+        $lines[] = '';
+        $lines[] = '💡 استخدم /start لعرض الطرق.';
+
+        $text = implode("\n", $lines);
+
+        return $this->notifyAllUsers($text);
+    }
+}
+
+
+===== <?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+use SergiX44\Nutgram\Nutgram;
+
+class TelegramServiceProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        $this->app->singleton(Nutgram::class, function () {
+            return new Nutgram(config('services.telegram.bot_token'));
+        });
+    }
+
+    public function boot(): void
+    {
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                // ─── أرشفة وتنظيف ───
+                \App\Console\Commands\ArchiveOldTransactions::class,
+                \App\Console\Commands\CleanOldTransactions::class,
+                \App\Console\Commands\CleanLogs::class,
+
+                // ─── تقارير ───
+                \App\Console\Commands\DailyFullReport::class,
+
+                // ─── نسخ احتياطي وصيانة ───
+                \App\Console\Commands\RunBackup::class,
+                \App\Console\Commands\CheckBalances::class,
+
+                // ─── إحالات وعجلة ───
+                \App\Console\Commands\ProcessReferralCycle::class,
+                \App\Console\Commands\ResetDailyWheelCommand::class,
+
+                // ─── محافظ ───
+                \App\Console\Commands\WalletInitCommand::class,
+                \App\Console\Commands\SyncWalletBalances::class,  // ← جديد
+
+                // ─── إشعارات ───
+                \App\Console\Commands\NotifyPendingWithdraws::class,
+                \App\Console\Commands\SetBotCommands::class,
+            ]);
+        }
+    }
+}
+
+
+===== <?php
+
+namespace App\Telegram\Handlers\User;
+
+use App\Models\Setting;
+use App\Models\User;
+use App\Services\IChancy\IChancyAccountService;
+use App\Services\IChancy\IChancyTransferService;
+use App\Telegram\Keyboards\User\IChancyDepositKeyboard;
+use App\Telegram\Keyboards\User\IChancyWithdrawKeyboard;
+use App\Telegram\Screens\User\IChancyDepositScreen;
+use App\Telegram\Screens\User\IChancyWithdrawScreen;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+use SergiX44\Nutgram\Nutgram;
+use SergiX44\Nutgram\Telegram\Properties\ButtonStyle;
+use SergiX44\Nutgram\Telegram\Types\Keyboard\InlineKeyboardButton;
+use SergiX44\Nutgram\Telegram\Types\Keyboard\InlineKeyboardMarkup;
+
+class IChancyUserHandler
+{
+    // ============================================================
+    //  💰 شحن IChancy — مع رسالة تحميل ديناميكية
+    // ============================================================
+    public function deposit(Nutgram $bot): void
+    {
+        $user = $this->getUser($bot);
+        if (! $user) return;
+
+        $this->safeAnswer($bot);
+
+        // ✅ 1. إظهار رسالة الانتظار
+        $waitMsg = $this->safeEdit(
+            $bot,
+            "⏳ <b>جاري التحميل...</b>\n\n" .
+            "🔄 يتم جلب بيانات حسابك",
+            InlineKeyboardMarkup::make(),
+        );
+
+        // ✅ 2. التحقق من الحساب
+        if (! $user->ichancyAccount) {
+            $this->safeEdit(
+                $bot,
+                "⚠️ <b>لا يوجد حساب IChancy</b>\n\n" .
+                "سيتم إنشاؤه تلقائياً عند التسجيل.\n" .
+                "تواصل مع الدعم للمساعدة.",
+                InlineKeyboardMarkup::make()
+                    ->addRow(
+                        InlineKeyboardButton::make(
+                            text: '↩️ رجوع',
+                            callback_data: 'user.dashboard',
+                        ),
+                    ),
+            );
+            return;
+        }
+
+        // ✅ 3. التحقق من التفعيل
+        if (! (bool) Setting::get('ichancy.enabled', true)) {
+            $this->safeAnswer($bot, '⚠️ خدمة IChancy معطلة حالياً', true);
+            $this->safeEdit(
+                $bot,
+                "⚠️ <b>الخدمة معطلة</b>\n\n" .
+                "خدمة IChancy معطلة حالياً.\n" .
+                "الرجاء المحاولة لاحقاً.",
+                InlineKeyboardMarkup::make()
+                    ->addRow(
+                        InlineKeyboardButton::make(
+                            text: '↩️ رجوع',
+                            callback_data: 'user.dashboard',
+                        ),
+                    ),
+            );
+            return;
+        }
+
+        // ✅ 4. عرض الشاشة
+        $this->safeEdit(
+            $bot,
+            IChancyDepositScreen::options($user),
+            IChancyDepositKeyboard::options(),
+        );
+    }
+
+    // ============================================================
+    //  💰 شحن كامل الرصيد
+    // ============================================================
+    public function depositFull(Nutgram $bot): void
+    {
+        $user = $this->getUser($bot);
+        if (! $user) return;
+
+        $wallet = $user->wallet;
+        $balance = $wallet ? (float) $wallet->balance_nsp : 0;
+
+        $cfg = $this->getSettings();
+
+        if ($balance < $cfg['min_deposit']) {
+            $this->safeAnswer(
+                $bot,
+                '❌ رصيدك أقل من الحد الأدنى (' . number_format($cfg['min_deposit']) . ')',
+                true,
+            );
+            return;
+        }
+
+        Cache::put(
+            "ichancy_deposit_amount_{$user->id}",
+            $balance,
+            now()->addMinutes(10),
+        );
+
+        $this->safeAnswer($bot);
+        $this->safeEdit(
+            $bot,
+            IChancyDepositScreen::confirm($user, $balance),
+            IChancyDepositKeyboard::confirm(),
+        );
+    }
+
+    // ============================================================
+    //  ✏️ شحن رصيد محدد
+    // ============================================================
+    public function depositCustom(Nutgram $bot): void
+    {
+        $user = $this->getUser($bot);
+        if (! $user) return;
+
+        $this->safeAnswer($bot);
+
+        Cache::put(
+            "ichancy_awaiting_type_{$bot->userId()}",
+            'deposit',
+            now()->addMinutes(10),
+        );
+
+        \App\Telegram\Conversations\User\IChancyAmountConversation::begin($bot);
+    }
+
+    // ============================================================
+    //  ✅ تأكيد الشحن — مع رسالة تحميل ديناميكية
+    // ============================================================
+    public function depositConfirm(Nutgram $bot): void
+    {
+        $user = $this->getUser($bot);
+        if (! $user) return;
+
+        $amount = (float) Cache::pull("ichancy_deposit_amount_{$user->id}");
+
+        if ($amount <= 0) {
+            $this->safeAnswer($bot, '⚠️ انتهت صلاحية العملية', true);
+            return;
+        }
+
+        $this->safeAnswer($bot);
+
+        // ✅ 1. رسالة تحميل ديناميكية
+        $this->safeEdit(
+            $bot,
+            "⏳ <b>جاري الشحن...</b>\n\n" .
+            "📤 يتم إرسال المبلغ إلى IChancy\n" .
+            "💰 المبلغ: <code>" . number_format($amount, 2) . " NSP</code>\n\n" .
+            "⚡ الرجاء الانتظار...",
+            InlineKeyboardMarkup::make(),
+        );
+
+        // ✅ 2. التنفيذ
+        $result = app(IChancyTransferService::class)->deposit($user, $amount);
+
+        if (! $result['success']) {
+            $this->safeEdit(
+                $bot,
+                "❌ <b>فشل الشحن</b>\n\n" .
+                "📝 <b>السبب:</b>\n" .
+                "<i>" . htmlspecialchars(\App\Helpers\ErrorMessages::friendly($result['error'] ?? null, 'ichancy'), ENT_QUOTES, 'UTF-8') . "</i>",
+                InlineKeyboardMarkup::make()
+                    ->addRow(
+                        InlineKeyboardButton::make(
+                            text: '↩️ رجوع',
+                            callback_data: 'user.dashboard',
+                        ),
+                    ),
+            );
+            return;
+        }
+
+        // ✅ 3. نجاح
+        $rate = (int) Setting::get('ichancy.display_rate', 100);
+        $amountNps = $amount * $rate;
+
+        $this->safeEdit(
+            $bot,
+            implode("\n", [
+                '✅ <b>تم الشحن بنجاح!</b>',
+                '━━━━━━━━━━━━━━━━━━',
+                '',
+                '💰 <b>من محفظة البوت (NSP):</b>',
+                '└── <code>-' . number_format($amount, 2) . ' NSP</code>',
+                '',
+                '🎮 <b>وصل لحساب IChancy (NPS):</b>',
+                '└── <code>+' . number_format($amountNps, 2) . ' NPS</code>',
+                '',
+                '📊 <b>المرجع:</b>',
+                '└── <code>' . $result['transaction']->reference . '</code>',
+                '',
+                '━━━━━━━━━━━━━━━━━━',
+                '',
+                '🎯 يمكنك اللعب الآن!',
+            ]),
+            InlineKeyboardMarkup::make()
+                ->addRow(
+                    InlineKeyboardButton::make(
+                        text: '🏠 القائمة الرئيسية',
+                        callback_data: 'user.dashboard',
+                        style: ButtonStyle::SUCCESS,
+                    ),
+                ),
+        );
+    }
+
+    // ============================================================
+    //  💸 سحب IChancy — مع رسالة تحميل ديناميكية
+    // ============================================================
+    public function withdraw(Nutgram $bot): void
+    {
+        $user = $this->getUser($bot);
+        if (! $user) return;
+
+        $this->safeAnswer($bot);
+
+        if (! $user->ichancyAccount) {
+            $this->safeAnswer($bot, '⚠️ لا يوجد حساب IChancy', true);
+            return;
+        }
+
+        if (! (bool) Setting::get('ichancy.enabled', true)) {
+            $this->safeAnswer($bot, '⚠️ خدمة IChancy معطلة حالياً', true);
+            return;
+        }
+
+        // ✅ 1. رسالة تحميل ديناميكية
+        $this->safeEdit(
+            $bot,
+            "⏳ <b>جاري التحميل...</b>\n\n" .
+            "🎮 يتم جلب رصيد IChancy\n" .
+            "⚡ الرجاء الانتظار...",
+            InlineKeyboardMarkup::make(),
+        );
+
+        // ✅ 2. جلب الرصيد (بدون cache)
+        $balanceData = app(IChancyAccountService::class)->getBalanceForUser($user, 0);
+        $balance = $balanceData ? (float) $balanceData['balance'] : 0;
+
+        // ✅ 3. عرض الشاشة
+        $this->safeEdit(
+            $bot,
+            IChancyWithdrawScreen::options($user, $balance),
+            IChancyWithdrawKeyboard::options(),
+        );
+    }
+
+    // ============================================================
+    //  💸 سحب كامل الرصيد
+    // ============================================================
+    public function withdrawFull(Nutgram $bot): void
+    {
+        $user = $this->getUser($bot);
+        if (! $user) return;
+
+        // ✅ رسالة تحميل
+        $this->safeAnswer($bot);
+        $this->safeEdit(
+            $bot,
+            "⏳ <b>جاري التحقق...</b>\n\n" .
+            "💰 يتم جلب رصيدك من IChancy",
+            InlineKeyboardMarkup::make(),
+        );
+
+        $balanceData = app(IChancyAccountService::class)->getBalanceForUser($user, 0);
+        $balance = $balanceData ? (float) $balanceData['balance'] : 0;
+
+        $cfg = $this->getSettings();
+
+        if ($balance < $cfg['min_withdraw']) {
+            $this->safeEdit(
+                $bot,
+                "❌ <b>رصيد غير كافٍ</b>\n\n" .
+                "🎮 رصيد IChancy: <code>" . number_format($balance, 2) . " NSP</code>\n" .
+                "📊 الحد الأدنى: <code>" . number_format($cfg['min_withdraw']) . " NSP</code>",
+                InlineKeyboardMarkup::make()
+                    ->addRow(
+                        InlineKeyboardButton::make(
+                            text: '↩️ رجوع',
+                            callback_data: 'user.ichancy.withdraw',
+                        ),
+                    ),
+            );
+            return;
+        }
+
+        Cache::put(
+            "ichancy_withdraw_amount_{$user->id}",
+            $balance,
+            now()->addMinutes(10),
+        );
+
+        $this->safeEdit(
+            $bot,
+            IChancyWithdrawScreen::confirm($user, $balance),
+            IChancyWithdrawKeyboard::confirm(),
+        );
+    }
+
+    // ============================================================
+    //  ✏️ سحب رصيد محدد
+    // ============================================================
+    public function withdrawCustom(Nutgram $bot): void
+    {
+        $user = $this->getUser($bot);
+        if (! $user) return;
+
+        $this->safeAnswer($bot);
+
+        Cache::put(
+            "ichancy_awaiting_type_{$bot->userId()}",
+            'withdraw',
+            now()->addMinutes(10),
+        );
+
+        \App\Telegram\Conversations\User\IChancyAmountConversation::begin($bot);
+    }
+
+    // ============================================================
+    //  ✅ تأكيد السحب — مع رسالة تحميل ديناميكية
+    // ============================================================
+    public function withdrawConfirm(Nutgram $bot): void
+    {
+        $user = $this->getUser($bot);
+        if (! $user) return;
+
+        $amount = (float) Cache::pull("ichancy_withdraw_amount_{$user->id}");
+
+        if ($amount <= 0) {
+            $this->safeAnswer($bot, '⚠️ انتهت صلاحية العملية', true);
+            return;
+        }
+
+        $this->safeAnswer($bot);
+
+        // ✅ 1. رسالة تحميل
+        $this->safeEdit(
+            $bot,
+            "⏳ <b>جاري السحب...</b>\n\n" .
+            "📥 يتم سحب المبلغ من IChancy\n" .
+            "💰 المبلغ: <code>" . number_format($amount, 2) . " NSP</code>\n\n" .
+            "⚡ الرجاء الانتظار...",
+            InlineKeyboardMarkup::make(),
+        );
+
+        // ✅ 2. التنفيذ
+        $result = app(IChancyTransferService::class)->withdraw($user, $amount);
+
+        if (! $result['success']) {
+            $this->safeEdit(
+                $bot,
+                "❌ <b>فشل السحب</b>\n\n" .
+                "📝 <b>السبب:</b>\n" .
+                "<i>" . htmlspecialchars(\App\Helpers\ErrorMessages::friendly($result['error'] ?? null, 'ichancy'), ENT_QUOTES, 'UTF-8') . "</i>",
+                InlineKeyboardMarkup::make()
+                    ->addRow(
+                        InlineKeyboardButton::make(
+                            text: '↩️ رجوع',
+                            callback_data: 'user.dashboard',
+                        ),
+                    ),
+            );
+            return;
+        }
+
+        // ✅ 3. نجاح
+        $rate = (int) Setting::get('ichancy.display_rate', 100);
+        $amountNps = $amount * $rate;
+
+        $this->safeEdit(
+            $bot,
+            implode("\n", [
+                '✅ <b>تم السحب بنجاح!</b>',
+                '━━━━━━━━━━━━━━━━━━',
+                '',
+                '🎮 <b>من حساب IChancy (NPS):</b>',
+                '└── <code>-' . number_format($amountNps, 2) . ' NPS</code>',
+                '',
+                '💰 <b>وصل لمحفظة البوت (NSP):</b>',
+                '└── <code>+' . number_format($amount, 2) . ' NSP</code>',
+                '',
+                '📊 <b>المرجع:</b>',
+                '└── <code>' . $result['transaction']->reference . '</code>',
+                '',
+                '━━━━━━━━━━━━━━━━━━',
+            ]),
+            InlineKeyboardMarkup::make()
+                ->addRow(
+                    InlineKeyboardButton::make(
+                        text: '🏠 القائمة الرئيسية',
+                        callback_data: 'user.dashboard',
+                        style: ButtonStyle::SUCCESS,
+                    ),
+                ),
+        );
+    }
+
+    // ============================================================
+    //  Helpers
+    // ============================================================
+    private function getUser(Nutgram $bot): ?User
+    {
+        return User::where('telegram_id', $bot->userId())->first();
+    }
+
+    private function getSettings(): array
+    {
+        return [
+            'currency'     => 'NSP',
+            'min_deposit'  => (int) Setting::get('ichancy.min_deposit', 100),
+            'max_deposit'  => (int) Setting::get('ichancy.max_deposit', 1000000),
+            'min_withdraw' => (int) Setting::get('ichancy.min_withdraw', 100),
+            'max_withdraw' => (int) Setting::get('ichancy.max_withdraw', 1000000),
+        ];
+    }
+
+    private function safeAnswer(Nutgram $bot, ?string $text = null, bool $alert = false): void
+    {
+        try {
+            $bot->answerCallbackQuery(text: $text, show_alert: $alert);
+        } catch (\Throwable $e) {
+        }
+    }
+
+    private function safeEdit(Nutgram $bot, string $text, $keyboard): void
+    {
+        try {
+            $bot->editMessageText(
+                text: $text,
+                parse_mode: 'HTML',
+                reply_markup: $keyboard,
+            );
+        } catch (\Throwable $e) {
+            if (str_contains($e->getMessage(), 'not modified')) {
+                return;
+            }
+
+            try {
+                $bot->sendMessage(
+                    text: $text,
+                    parse_mode: 'HTML',
+                    reply_markup: $keyboard,
+                );
+            } catch (\Throwable $e2) {
+                Log::warning('IChancyUserHandler safeEdit failed', [
+                    'error' => $e2->getMessage(),
+                ]);
+            }
+        }
+    }
+}

@@ -1,0 +1,1152 @@
+<?php
+
+/** @var SergiX44\Nutgram\Nutgram $bot */
+
+use Illuminate\Support\Facades\Log;
+use App\Telegram\Commands\StartCommand;
+use App\Telegram\Conversations\User\UserDepositConversation;
+use App\Telegram\Conversations\User\UserWithdrawConversation;
+use App\Telegram\Conversations\User\DeleteAccountConversation;
+use App\Telegram\Handlers\Admin\Analytics\AnalyticsHandler;
+use App\Telegram\Handlers\Admin\Communication\CommunicationHandler;
+use App\Telegram\Handlers\Admin\DashboardHandler;
+use App\Telegram\Handlers\Admin\Finance\DepositMethodsHandler;
+use App\Telegram\Handlers\Admin\Finance\DepositsHandler;
+use App\Telegram\Handlers\Admin\Finance\FinanceHandler;
+use App\Telegram\Handlers\Admin\Finance\MainWalletHandler;
+use App\Telegram\Handlers\Admin\Finance\ReportsHandler;
+use App\Telegram\Handlers\Admin\Finance\TransactionsHandler;
+use App\Telegram\Handlers\Admin\Finance\WithdrawsHandler;
+use App\Telegram\Handlers\Admin\NavigationHandler;
+use App\Telegram\Handlers\Admin\Referrals\AllReferralsHandler;
+use App\Telegram\Handlers\Admin\Referrals\ReferralAdminHandler;
+use App\Telegram\Handlers\Admin\Referrals\ReferralCyclesHandler;
+use App\Telegram\Handlers\Admin\Referrals\ReferralHistoryHandler;
+use App\Telegram\Handlers\Admin\Referrals\ReferralSettingsHandler;
+use App\Telegram\Handlers\Admin\Referrals\TopReferrersHandler;
+use App\Telegram\Handlers\Admin\Support\SupportHandler;
+use App\Telegram\Handlers\Admin\System\AdminHandler;
+use App\Telegram\Handlers\Admin\System\IChancySettingsHandler;
+use App\Telegram\Handlers\Admin\System\SystemHandler;
+use App\Telegram\Handlers\Admin\Users\BalanceAdjustmentHandler;
+use App\Telegram\Handlers\Admin\Users\NewUsersHandler;
+use App\Telegram\Handlers\Admin\Users\TrashedUsersHandler;
+use App\Telegram\Handlers\Admin\Users\UserDetailsHandler;
+use App\Telegram\Handlers\Admin\Users\UserReferralHandler as AdminUserReferralHandler;
+use App\Telegram\Handlers\Admin\Users\UserListHandler;
+use App\Telegram\Handlers\Admin\Users\UsersHandler;
+use App\Telegram\Handlers\User\GuideHandler;
+use App\Telegram\Handlers\User\SupportHandler as UserSupportHandler;
+use App\Telegram\Handlers\User\TermsHandler;
+use App\Telegram\Handlers\User\UserDashboardHandler;
+use App\Telegram\Handlers\User\UserReferralHandler;
+use App\Telegram\Handlers\User\UserTransactionsHandler;
+use App\Telegram\Handlers\User\UserWheelHandler;
+use App\Telegram\Handlers\User\IChancyUserHandler;
+use App\Telegram\Conversations\User\IChancyAmountConversation;
+use App\Telegram\Handlers\Wheel\WheelAdminHandler;
+use App\Telegram\Middleware\EnsureAdmin;
+use App\Telegram\Middleware\EnsureMaintenanceMode;
+use App\Telegram\Middleware\EnsureSuperAdmin;
+use App\Telegram\Middleware\EnsureUserIsActive;
+use App\Telegram\Middleware\TrackRequest;
+use Illuminate\Support\Facades\Cache;
+use SergiX44\Nutgram\Nutgram;
+use App\Telegram\Conversations\Admin\GiftCode\CreateGiftCodeConversation;
+use App\Telegram\Handlers\Admin\GiftCode\GiftCodeAdminHandler;
+use App\Telegram\Handlers\User\GiftCodeRedeemHandler;
+
+/*
+|--------------------------------------------------------------------------
+| Telegram Routes — Final Combined (Enhanced)
+|--------------------------------------------------------------------------
+*/
+
+// ============================================================
+//  🚀 Global Setup
+// ============================================================
+// ✅ /start مع أو بدون ref_ — يستقبل ref_XXX
+// ✅ /start مع أو بدون ref_
+// ✅ /start مع أو بدون ref_ — النمط الصحيح
+// ✅ /start العادي
+
+
+// ============================================================
+//  🚀 /start — مع أو بدون ref_
+// ============================================================
+// ✅ /start العادي
+$bot->onCommand('start', function (Nutgram $bot) {
+    app(\App\Telegram\Commands\StartCommand::class)->handle($bot);
+});
+
+// ✅ /start مع ref_XXX
+$bot->onText('/start\s+ref_([A-Za-z0-9]+)', function (Nutgram $bot, string $code) {
+    Cache::put(
+        'referral_code_' . $bot->userId(),
+        $code,
+        now()->addMinutes(30),
+    );
+
+    Log::info('Referral code captured (onText)', [
+        'telegram_id'   => $bot->userId(),
+        'referral_code' => $code,
+    ]);
+
+    // ✅ تمرير $code كـ referralCode
+    app(\App\Telegram\Commands\StartCommand::class)->handle($bot, $code);
+});
+
+// ============================================================
+//  👤 USER ROUTES
+// ============================================================
+
+// 🏠 Dashboard
+$bot->onCallbackQueryData('user.dashboard', [UserDashboardHandler::class, 'index'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.profile', [UserDashboardHandler::class, 'profile'])
+    ->middleware(EnsureUserIsActive::class);
+
+
+// ⚙️ إعدادات الحساب
+$bot->onCallbackQueryData('user.settings', [UserDashboardHandler::class, 'settings'])
+    ->middleware(EnsureUserIsActive::class);
+
+// 🗑 حذف الحساب
+$bot->onCallbackQueryData('user.delete-account', [UserDashboardHandler::class, 'deleteAccount'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.choose-referral-type', [UserDashboardHandler::class, 'chooseReferralType'])
+    ->middleware(EnsureUserIsActive::class);
+
+// 💰 Deposit
+$bot->onCallbackQueryData('user.deposit', function (Nutgram $bot) {
+    $bot->answerCallbackQuery();
+    UserDepositConversation::begin($bot);
+})
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.deposit.cancel', function (Nutgram $bot) {
+    try {
+        $bot->answerCallbackQuery();
+    } catch (\Throwable $e) {
+    }
+    $bot->sendMessage(text: '❌ تم إلغاء العملية.');
+});
+
+// 📤 Withdraw
+$bot->onCallbackQueryData('user.withdraw', function (Nutgram $bot) {
+    $bot->answerCallbackQuery();
+    UserWithdrawConversation::begin($bot);
+})
+    ->middleware(EnsureUserIsActive::class);
+
+// 📜 Transactions
+$bot->onCallbackQueryData('user.transactions', [UserTransactionsHandler::class, 'index'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.transactions.list.{filter}.{page}', [UserTransactionsHandler::class, 'list'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.transactions.show.{id}', [UserTransactionsHandler::class, 'show'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.transactions.noop', function (Nutgram $bot) {
+    try {
+        $bot->answerCallbackQuery();
+    } catch (\Throwable $e) {
+    }
+});
+
+// 🤝 Referrals
+$bot->onCallbackQueryData('user.referrals', [UserReferralHandler::class, 'index'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.referrals.list', [UserReferralHandler::class, 'listReferrals'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.referrals.rewards.all', [UserReferralHandler::class, 'rewards'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.referrals.rewards.instant', [UserReferralHandler::class, 'rewards'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.referrals.rewards.cycle', [UserReferralHandler::class, 'rewards'])
+    ->middleware(EnsureUserIsActive::class);
+
+// 🎡 Wheel — User
+$bot->onCallbackQueryData('user.wheel', [UserWheelHandler::class, 'index'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.wheel.spin', [UserWheelHandler::class, 'spin'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.wheel.history', [UserWheelHandler::class, 'history'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.wheel.refresh', [UserWheelHandler::class, 'index'])
+    ->middleware(EnsureUserIsActive::class);
+
+
+// ============================================================
+//  🎮 IChancy — User (شحن/سحب تلقائي)
+// ============================================================
+$bot->onCallbackQueryData('user.ichancy.deposit', [IChancyUserHandler::class, 'deposit'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.ichancy.deposit.full', [IChancyUserHandler::class, 'depositFull'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.ichancy.deposit.custom', [IChancyUserHandler::class, 'depositCustom'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.ichancy.deposit.confirm', [IChancyUserHandler::class, 'depositConfirm'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.ichancy.withdraw', [IChancyUserHandler::class, 'withdraw'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.ichancy.withdraw.full', [IChancyUserHandler::class, 'withdrawFull'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.ichancy.withdraw.custom', [IChancyUserHandler::class, 'withdrawCustom'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.ichancy.withdraw.confirm', [IChancyUserHandler::class, 'withdrawConfirm'])
+    ->middleware(EnsureUserIsActive::class);
+// 🚧 Coming Soon
+$comingSoon = function (Nutgram $bot) {
+    try {
+        $bot->answerCallbackQuery(text: '🚧 قيد التطوير', show_alert: true);
+    } catch (\Throwable $e) {
+    }
+};
+
+$bot->onCallbackQueryData('user.support', [UserSupportHandler::class, 'index']);
+$bot->onCallbackQueryData('user.guide', [GuideHandler::class, 'index']);
+$bot->onCallbackQueryData('user.terms', [TermsHandler::class, 'index']);
+// ============================================================
+//  🎁 Gift Codes — User
+// ============================================================
+$bot->onCallbackQueryData('user.gift', [GiftCodeRedeemHandler::class, 'show'])
+    ->middleware(EnsureUserIsActive::class);
+
+$bot->onCallbackQueryData('user.gift-code', [GiftCodeRedeemHandler::class, 'show'])
+    ->middleware(EnsureUserIsActive::class);
+
+foreach (
+    [
+
+        'user.cashback',
+        'user.debt',
+        'user.refund',
+
+    ] as $route
+) {
+    $bot->onCallbackQueryData($route, $comingSoon);
+}
+
+// ============================================================
+//  👑 ADMIN ROUTES
+// ============================================================
+
+// 🧭 Navigation
+$bot->onCallbackQueryData('admin.nav.{from}', [NavigationHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+// 🏠 Dashboard
+$bot->onCallbackQueryData('admin.dashboard', [DashboardHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  👥 Users
+// ============================================================
+$bot->onCallbackQueryData('admin.users', [UsersHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.list', [UserListHandler::class, 'list'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.list.page.{page}', [UserListHandler::class, 'list'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.search', [UserListHandler::class, 'search'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.show.{id}', [UserDetailsHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.toggle.{id}', [UserDetailsHandler::class, 'toggle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.edit.{id}', [UserDetailsHandler::class, 'edit'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.delete.{id}', [UserDetailsHandler::class, 'delete'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.delete.confirm.{id}', [UserDetailsHandler::class, 'deleteConfirm'])
+    ->middleware(EnsureAdmin::class);
+
+// Balance Adjustment
+$bot->onCallbackQueryData('admin.users.balance.{id}', [BalanceAdjustmentHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.balance.add.{id}', [BalanceAdjustmentHandler::class, 'startAdd'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.balance.sub.{id}', [BalanceAdjustmentHandler::class, 'startSub'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.balance.history.{id}', [BalanceAdjustmentHandler::class, 'history'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  🧑🤝🧑 User Referrals (شبكة الإحالات)
+// ============================================================
+$bot->onCallbackQueryData('admin.users.referrals.{id}', [AdminUserReferralHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.referrals.list.{id}', [AdminUserReferralHandler::class, 'listReferrals'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.referrals.rewards.{id}', [AdminUserReferralHandler::class, 'rewards'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.referrals.instant.{id}', [AdminUserReferralHandler::class, 'instant'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.referrals.cycles.{id}', [AdminUserReferralHandler::class, 'cycles'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.referrals.reset-type.{id}', [AdminUserReferralHandler::class, 'resetType'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.referrals.reset-type-confirm.{id}', [AdminUserReferralHandler::class, 'resetTypeConfirm'])
+    ->middleware(EnsureAdmin::class);
+// IChancy User Balance
+$bot->onCallbackQueryData('admin.users.ichancy.{id}', [UserDetailsHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+// Trashed Users
+$bot->onCallbackQueryData('admin.users.trashed', [TrashedUsersHandler::class, 'list'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.trashed.show.{id}', [TrashedUsersHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.trashed.restore.{id}', [TrashedUsersHandler::class, 'restore'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.trashed.restore-all', [TrashedUsersHandler::class, 'restoreAll'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.trashed.force.{id}', [TrashedUsersHandler::class, 'forceConfirm'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.trashed.force-confirm.{id}', [TrashedUsersHandler::class, 'forceDelete'])
+    ->middleware(EnsureAdmin::class);
+
+// New Users
+$bot->onCallbackQueryData('admin.users.new', [NewUsersHandler::class, 'list'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.users.new.mark-all-seen', [NewUsersHandler::class, 'markAllSeen'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  💰 Finance
+// ============================================================
+$bot->onCallbackQueryData('admin.finance', [FinanceHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+// Main Wallet
+$bot->onCallbackQueryData('admin.finance.main-wallet', [MainWalletHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.main-wallet.deposits', [MainWalletHandler::class, 'deposits'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.main-wallet.withdraws', [MainWalletHandler::class, 'withdraws'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.main-wallet.transactions', [MainWalletHandler::class, 'transactions'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.main-wallet.stats', [MainWalletHandler::class, 'stats'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.main-wallet.sync', [MainWalletHandler::class, 'sync'])
+    ->middleware(EnsureAdmin::class);
+
+// Deposits
+$bot->onCallbackQueryData('admin.finance.deposits', [DepositsHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposits.pending', [DepositsHandler::class, 'pending'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposits.approved', [DepositsHandler::class, 'approved'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposits.rejected', [DepositsHandler::class, 'rejected'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposits.all', [DepositsHandler::class, 'all'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposits.show.{id}', [DepositsHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposits.approve.{id}', [DepositsHandler::class, 'approve'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposits.reject.{id}', [DepositsHandler::class, 'reject'])
+    ->middleware(EnsureAdmin::class);
+
+// Withdraws
+$bot->onCallbackQueryData('admin.finance.withdraws', [WithdrawsHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.withdraws.pending', [WithdrawsHandler::class, 'pending'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.withdraws.approved', [WithdrawsHandler::class, 'approved'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.withdraws.rejected', [WithdrawsHandler::class, 'rejected'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.withdraws.all', [WithdrawsHandler::class, 'all'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.withdraws.show.{id}', [WithdrawsHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.withdraws.approve.{id}', [WithdrawsHandler::class, 'approve'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.withdraws.reject.{id}', [WithdrawsHandler::class, 'reject'])
+    ->middleware(EnsureAdmin::class);
+
+// Reports
+$bot->onCallbackQueryData('admin.finance.reports', [ReportsHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.reports.today', [ReportsHandler::class, 'today'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.reports.week', [ReportsHandler::class, 'week'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.reports.month', [ReportsHandler::class, 'month'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.reports.this-month', [ReportsHandler::class, 'thisMonth'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.reports.last-month', [ReportsHandler::class, 'lastMonth'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.reports.year', [ReportsHandler::class, 'year'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.reports.overview', [ReportsHandler::class, 'overview'])
+    ->middleware(EnsureAdmin::class);
+
+// Exchange Rates
+// Transactions
+$bot->onCallbackQueryData('admin.finance.transactions', [TransactionsHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.transactions.all', [TransactionsHandler::class, 'all'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.transactions.deposits', [TransactionsHandler::class, 'deposits'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.transactions.withdrawals', [TransactionsHandler::class, 'withdrawals'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.transactions.exchanges', [TransactionsHandler::class, 'exchanges'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.transactions.adjustments', [TransactionsHandler::class, 'adjustments'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.transactions.pending', [TransactionsHandler::class, 'pending'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.transactions.completed', [TransactionsHandler::class, 'completed'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.transactions.rejected', [TransactionsHandler::class, 'rejected'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.transactions.show.{id}', [TransactionsHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+
+// Deposit Methods
+$bot->onCallbackQueryData('admin.finance.deposit-methods', [DepositMethodsHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.create', [DepositMethodsHandler::class, 'create'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.show.{id}', [DepositMethodsHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.toggle.{id}', [DepositMethodsHandler::class, 'toggle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.delete.{id}', [DepositMethodsHandler::class, 'delete'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.delete-confirm.{id}', [DepositMethodsHandler::class, 'deleteConfirm'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.edit-name.{id}', [DepositMethodsHandler::class, 'editName'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.edit-icon.{id}', [DepositMethodsHandler::class, 'editIcon'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.edit-account.{id}', [DepositMethodsHandler::class, 'editAccount'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.edit-account-name.{id}', [DepositMethodsHandler::class, 'editAccountName'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.edit-instructions.{id}', [DepositMethodsHandler::class, 'editInstructions'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.edit-limits.{id}', [DepositMethodsHandler::class, 'editLimits'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.edit-commission.{id}', [DepositMethodsHandler::class, 'editCommission'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.edit-receiver-gsm.{id}', [DepositMethodsHandler::class, 'editReceiverGsm'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.finance.deposit-methods.edit-receiver-address.{id}', [DepositMethodsHandler::class, 'editReceiverAddress'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  🎯 Referrals
+// ============================================================
+$bot->onCallbackQueryData('admin.referrals', [ReferralAdminHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.settings', [ReferralSettingsHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.settings.noop', [ReferralSettingsHandler::class, 'noop'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.settings.toggle-active', [ReferralSettingsHandler::class, 'toggleActive'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.settings.{field}.{action}', [ReferralSettingsHandler::class, 'adjust'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.cycles', [ReferralCyclesHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.cycles.show.{id}', [ReferralCyclesHandler::class, 'show'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.cycles.list', [ReferralCyclesHandler::class, 'list'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.cycles.rewards.{id}', [ReferralCyclesHandler::class, 'rewards'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.cycles.close.{id}', [ReferralCyclesHandler::class, 'close'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.cycles.close-confirm.{id}', [ReferralCyclesHandler::class, 'closeConfirm'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.cycles.create', [ReferralCyclesHandler::class, 'create'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.top', [TopReferrersHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.top.{period}', [TopReferrersHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.all', [AllReferralsHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.all.page.{page}', [AllReferralsHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.all.noop', [AllReferralsHandler::class, 'noop'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.history', [ReferralHistoryHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.history.{filter}', [ReferralHistoryHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.history.{filter}.page.{page}', [ReferralHistoryHandler::class, 'handle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.referrals.history.noop', [ReferralHistoryHandler::class, 'noop'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  📈 Analytics
+// ============================================================
+$bot->onCallbackQueryData('admin.analytics', [AnalyticsHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.analytics.users', [AnalyticsHandler::class, 'users'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.analytics.finance', [AnalyticsHandler::class, 'finance'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.analytics.referrals', [AnalyticsHandler::class, 'referrals'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.analytics.comparison', [AnalyticsHandler::class, 'comparison'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.analytics.comparison.{period}', [AnalyticsHandler::class, 'comparisonPeriod'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  📣 Communication
+// ============================================================
+$bot->onCallbackQueryData('admin.communication', [CommunicationHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('comm.broadcast', [CommunicationHandler::class, 'broadcast'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('comm.single', [CommunicationHandler::class, 'single'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('comm.cancel', [CommunicationHandler::class, 'cancel'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  🛠️ System
+// ============================================================
+$bot->onCallbackQueryData('admin.system', [SystemHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.general', [SystemHandler::class, 'general'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.finance', [SystemHandler::class, 'finance'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.maintenance', [SystemHandler::class, 'maintenance'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.maintenance.confirm-on', [SystemHandler::class, 'confirmMaintenanceOn'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.maintenance.confirm-off', [SystemHandler::class, 'confirmMaintenanceOff'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.maintenance.do-on', [SystemHandler::class, 'doMaintenanceOn'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.maintenance.do-off', [SystemHandler::class, 'doMaintenanceOff'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.info', [SystemHandler::class, 'info'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.cancel', [SystemHandler::class, 'cancel'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.noop', [SystemHandler::class, 'noop'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.toggle.{key}', [SystemHandler::class, 'toggleSetting'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.edit.{key}', function (Nutgram $bot, string $key) {
+    try {
+        $bot->answerCallbackQuery();
+    } catch (\Throwable $e) {
+    }
+
+    cache()->put("sys.edit.{$bot->userId()}", $key, now()->addMinutes(10));
+
+    \App\Telegram\Conversations\Admin\System\EditSettingConversation::begin($bot);
+})
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  🎮 IChancy Settings
+// ============================================================
+$bot->onCallbackQueryData('sys.ichancy', [IChancySettingsHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.ichancy.toggle', [IChancySettingsHandler::class, 'toggle'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('sys.ichancy.edit.{key}', [IChancySettingsHandler::class, 'edit'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  🎧 Support
+// ============================================================
+$bot->onCallbackQueryData('admin.support', [SupportHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('support.agent.show.{id}', [SupportHandler::class, 'showAgent'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('support.agent.toggle.{id}', [SupportHandler::class, 'toggleAgent'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('support.agent.delete.{id}', [SupportHandler::class, 'confirmDelete'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('support.agent.delete-confirm.{id}', [SupportHandler::class, 'deleteAgent'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('support.agent.create', [SupportHandler::class, 'create'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('support.noop', [SupportHandler::class, 'noop'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  🎡 Wheel — Admin
+// ============================================================
+$bot->onCallbackQueryData('wheel.admin', [WheelAdminHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.noop', function (Nutgram $bot) {
+    try {
+        $bot->answerCallbackQuery();
+    } catch (\Throwable $e) {
+    }
+})
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.settings', [WheelAdminHandler::class, 'settings'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.edit-setting.{key}', [WheelAdminHandler::class, 'editSetting'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.toggle-active', [WheelAdminHandler::class, 'toggleActive'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.toggle-path.{key}', [WheelAdminHandler::class, 'togglePath'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.prizes', [WheelAdminHandler::class, 'prizes'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.prize.create', [WheelAdminHandler::class, 'createPrize'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.prize.show.{id}', [WheelAdminHandler::class, 'showPrize'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.prize.edit.{id}', [WheelAdminHandler::class, 'editPrize'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.prize.weight.{id}', [WheelAdminHandler::class, 'weightPrize'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.prize.toggle.{id}', [WheelAdminHandler::class, 'togglePrize'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.prize.delete.{id}', [WheelAdminHandler::class, 'deletePrize'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.prize.delete-confirm.{id}', [WheelAdminHandler::class, 'deletePrizeConfirm'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.stats', [WheelAdminHandler::class, 'stats'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.history.{page}', [WheelAdminHandler::class, 'history'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.history.noop', function (Nutgram $bot) {
+    try {
+        $bot->answerCallbackQuery();
+    } catch (\Throwable $e) {
+    }
+})
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.user.search', [WheelAdminHandler::class, 'userSpins'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.user.grant.{id}', [WheelAdminHandler::class, 'grantSpin'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('wheel.admin.user.reset.{id}', [WheelAdminHandler::class, 'resetDaily'])
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  🎁 Gift Codes — Admin
+// ============================================================
+$bot->onCallbackQueryData('admin.gift-codes', [GiftCodeAdminHandler::class, 'index'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.gift-codes.create', function (Nutgram $bot) {
+    $bot->answerCallbackQuery();
+    CreateGiftCodeConversation::begin($bot);
+})
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.gift-codes.active', [GiftCodeAdminHandler::class, 'active'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.gift-codes.history', [GiftCodeAdminHandler::class, 'history'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('admin.gift-codes.disable.{id}', [GiftCodeAdminHandler::class, 'disable'])
+    ->middleware(EnsureAdmin::class);
+
+$bot->onCallbackQueryData('gift.create.cancel', function (Nutgram $bot) {
+    // يتم التعامل معه داخل Conversation
+})
+    ->middleware(EnsureAdmin::class);
+
+// ============================================================
+//  👑 SUPER ADMIN ROUTES
+// ============================================================
+$bot->onCallbackQueryData('sys.admins', [AdminHandler::class, 'index'])
+    ->middleware(EnsureSuperAdmin::class);
+
+$bot->onCallbackQueryData('sys.admin.show.{id}', [AdminHandler::class, 'show'])
+    ->middleware(EnsureSuperAdmin::class);
+
+$bot->onCallbackQueryData('sys.admin.create', [AdminHandler::class, 'create'])
+    ->middleware(EnsureSuperAdmin::class);
+
+$bot->onCallbackQueryData('sys.admin.promote.{id}', [AdminHandler::class, 'promote'])
+    ->middleware(EnsureSuperAdmin::class);
+
+$bot->onCallbackQueryData('sys.admin.delete.{id}', [AdminHandler::class, 'confirmDelete'])
+    ->middleware(EnsureSuperAdmin::class);
+
+$bot->onCallbackQueryData('sys.admin.delete-confirm.{id}', [AdminHandler::class, 'delete'])
+    ->middleware(EnsureSuperAdmin::class);
+
+$bot->onCallbackQueryData('sys.admin.noop', function (Nutgram $bot) {
+    try {
+        $bot->answerCallbackQuery();
+    } catch (\Throwable $e) {
+    }
+})
+    ->middleware(EnsureSuperAdmin::class);
+
+// ============================================================
+//  🎡 Wheel Admin — Text Input Handler (محسّن)
+// ============================================================
+// ⚠️ يجب أن يكون قبل fallback — يعالج الرسائل النصية للأدمن
+// ⚠️ يفحص Cache محدد — لا يتعارض مع Conversations الأخرى
+
+$bot->onMessage(function (Nutgram $bot) {
+    $userId = $bot->userId();
+    $text = trim($bot->message()?->text ?? '');
+
+    // ✅ تجاهل الرسائل الفارغة والأوامر
+    if ($text === '' || str_starts_with($text, '/')) {
+        return;
+    }
+
+    // ✅ فحص سريع: هل توجد أي Cache key للـ Wheel Admin لهذا الأدمن؟
+    // إذا لا، لا نستعلم DB أصلاً
+    $keys = [
+        "wheel_admin_edit_{$userId}",
+        "wheel_admin_new_prize_{$userId}",
+        "wheel_admin_edit_prize_{$userId}",
+        "wheel_admin_edit_percent_{$userId}",
+        "wheel_admin_user_search_{$userId}",
+    ];
+
+    $hasAnyState = false;
+    foreach ($keys as $key) {
+        if (\Illuminate\Support\Facades\Cache::has($key)) {
+            $hasAnyState = true;
+            break;
+        }
+    }
+
+    if (! $hasAnyState) {
+        // لا توجد حالة Wheel Admin — اترك الرسالة للـ Conversation إن وجد
+        return;
+    }
+
+    // ✅ الآن نستعلم DB — فقط إذا كان هناك حالة
+    $admin = \App\Models\User::where('telegram_id', $userId)->first();
+
+    if (! $admin || ! $admin->is_admin) {
+        return;
+    }
+
+    $service = app(\App\Services\WheelAdminService::class);
+
+    // ==========================================================
+    // 1) تعديل إعداد
+    // ==========================================================
+    if ($key = \Illuminate\Support\Facades\Cache::pull("wheel_admin_edit_{$userId}")) {
+        $wheel = \App\Models\Wheel::first();
+
+        if (! $wheel) {
+            $bot->sendMessage(text: '❌ لا توجد عجلة.');
+            return;
+        }
+
+        if (! is_numeric($text)) {
+            $bot->sendMessage(text: '❌ القيمة يجب أن تكون رقماً.');
+            return;
+        }
+
+        $value = (float) $text;
+
+        try {
+            $service->updateSettings($wheel, [$key => $value], $admin);
+            $wheel->refresh();
+
+            $bot->sendMessage(
+                text: "✅ تم تحديث <b>{$key}</b> إلى <b>{$value}</b>",
+                parse_mode: 'HTML',
+            );
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Wheel setting update failed', [
+                'key'   => $key,
+                'value' => $value,
+                'error' => $e->getMessage(),
+            ]);
+
+            $bot->sendMessage(text: "❌ {$e->getMessage()}");
+        }
+        return;
+    }
+
+    // ==========================================================
+    // 2) إنشاء جائزة
+    // ==========================================================
+    if (\Illuminate\Support\Facades\Cache::pull("wheel_admin_new_prize_{$userId}")) {
+        $parts = array_map('trim', explode('|', $text));
+
+        if (count($parts) < 5) {
+            $bot->sendMessage(
+                text: "❌ الصيغة: <code>الاسم|الأيقونة|القيمة|العملة|النسبة|النوع</code>\n\n"
+                    . "الأنواع: balance / empty / recycle",
+                parse_mode: 'HTML',
+            );
+            return;
+        }
+
+        $name     = $parts[0];
+        $icon     = $parts[1] ?: '🎁';
+        $value    = (float) $parts[2];
+        $currency = strtoupper($parts[3]);
+        $weight   = (int) preg_replace('/[^0-9]/', '', $parts[4]);
+        $type     = isset($parts[5]) ? strtolower(trim($parts[5])) : 'balance';
+
+        if (! in_array($type, ['balance', 'empty', 'recycle'], true)) {
+            $bot->sendMessage(text: '❌ النوع: balance / empty / recycle');
+            return;
+        }
+
+        if ($type === 'recycle' || $type === 'empty') {
+            $value = 0;
+        }
+
+        $wheel = \App\Models\Wheel::first();
+
+        if (! $wheel) {
+            $bot->sendMessage(text: '❌ لا توجد عجلة.');
+            return;
+        }
+
+        try {
+            $service->createPrize($wheel, [
+                'name'     => $name,
+                'icon'     => $icon,
+                'value'    => $value,
+                'currency' => $currency,
+                'weight'   => $weight,
+                'type'     => $type,
+            ], $admin);
+
+            $total = (int) $wheel->prizes()->sum('weight');
+
+            $bot->sendMessage(
+                text: "✅ تمت إضافة: <b>{$name}</b>\n"
+                    . "🎯 النسبة: <b>{$weight}%</b>\n"
+                    . "📊 المجموع: <b>{$total}%</b>",
+                parse_mode: 'HTML',
+            );
+        } catch (\Throwable $e) {
+            $bot->sendMessage(text: "❌ {$e->getMessage()}");
+        }
+        return;
+    }
+
+    // ==========================================================
+    // 3) تعديل جائزة
+    // ==========================================================
+    if ($prizeId = \Illuminate\Support\Facades\Cache::pull("wheel_admin_edit_prize_{$userId}")) {
+        $prize = \App\Models\WheelPrize::find($prizeId);
+
+        if (! $prize) {
+            $bot->sendMessage(text: '❌ الجائزة غير موجودة.');
+            return;
+        }
+
+        $parts = array_map('trim', explode('|', $text));
+
+        if (count($parts) < 5) {
+            $bot->sendMessage(text: '❌ الصيغة غير صحيحة.');
+            return;
+        }
+
+        [$name, $icon, $value, $currency, $weight] = $parts;
+
+        try {
+            $service->updatePrize($prize, [
+                'name'     => $name,
+                'icon'     => $icon ?: '🎁',
+                'value'    => (float) $value,
+                'currency' => strtoupper($currency),
+                'weight'   => (int) $weight,
+            ], $admin);
+
+            $bot->sendMessage(
+                text: "✅ تم التحديث: <b>{$name}</b>",
+                parse_mode: 'HTML',
+            );
+        } catch (\Throwable $e) {
+            $bot->sendMessage(text: "❌ {$e->getMessage()}");
+        }
+        return;
+    }
+
+    // ==========================================================
+    // 3.b) تعديل النسبة
+    // ==========================================================
+    if ($prizeId = \Illuminate\Support\Facades\Cache::pull("wheel_admin_edit_percent_{$userId}")) {
+        $prize = \App\Models\WheelPrize::find($prizeId);
+
+        if (! $prize) {
+            $bot->sendMessage(text: '❌ الجائزة غير موجودة.');
+            return;
+        }
+
+        $clean = preg_replace('/[^0-9.]/', '', $text);
+
+        if ($clean === '' || ! is_numeric($clean)) {
+            $bot->sendMessage(text: "❌ أرسل رقماً 0-100.");
+            return;
+        }
+
+        $percent = (float) $clean;
+
+        if ($percent < 0 || $percent > 100) {
+            $bot->sendMessage(text: '❌ النسبة بين 0 و 100.');
+            return;
+        }
+
+        try {
+            $service->updatePrizeWeight($prize, $percent, $admin);
+
+            $total = (int) \App\Models\WheelPrize::where('wheel_id', $prize->wheel_id)->sum('weight');
+
+            $warning = $total !== 100
+                ? "\n\n⚠️ <b>تنبيه:</b> المجموع الآن <b>{$total}%</b>"
+                : '';
+
+            $bot->sendMessage(
+                text: "✅ تم تحديث نسبة <b>{$prize->name}</b>\n"
+                    . "النسبة: <b>{$percent}%</b>\n"
+                    . "المجموع: <b>{$total}%</b>"
+                    . $warning,
+                parse_mode: 'HTML',
+            );
+        } catch (\Throwable $e) {
+            $bot->sendMessage(text: "❌ {$e->getMessage()}");
+        }
+        return;
+    }
+
+    // ==========================================================
+    // 4) بحث عن مستخدم
+    // ==========================================================
+    if (\Illuminate\Support\Facades\Cache::pull("wheel_admin_user_search_{$userId}")) {
+        $user = \App\Models\User::where('username', 'like', "%{$text}%")
+            ->orWhere('telegram_id', $text)
+            ->orWhere('id', $text)
+            ->first();
+
+        if (! $user) {
+            $bot->sendMessage(text: '❌ لا يوجد مستخدم.');
+            return;
+        }
+
+        $state = \App\Models\WheelUserState::where('user_id', $user->id)->first();
+        $spins = $state->available_spins ?? 0;
+        $today = $state->spins_today ?? 0;
+
+        $keyboard = \SergiX44\Nutgram\Telegram\Types\Keyboard\InlineKeyboardMarkup::make()
+            ->addRow(
+                \SergiX44\Nutgram\Telegram\Types\Keyboard\InlineKeyboardButton::make(
+                    text: '➕ منح لفة',
+                    callback_data: "wheel.admin.user.grant.{$user->id}",
+                ),
+                \SergiX44\Nutgram\Telegram\Types\Keyboard\InlineKeyboardButton::make(
+                    text: '♻️ تصفير',
+                    callback_data: "wheel.admin.user.reset.{$user->id}",
+                ),
+            )
+            ->addRow(
+                \SergiX44\Nutgram\Telegram\Types\Keyboard\InlineKeyboardButton::make(
+                    text: '🔙 رجوع',
+                    callback_data: 'wheel.admin',
+                ),
+            );
+
+        $bot->sendMessage(
+            text: "👤 <b>{$user->username}</b>\n\n"
+                . "🎟 لفات: <b>{$spins}</b>\n"
+                . "📅 اليوم: <b>{$today}</b>",
+            parse_mode: 'HTML',
+            reply_markup: $keyboard,
+        );
+        return;
+    }
+});
+
+// ============================================================
+//  🎯 Fallback
+// ============================================================
+$bot->fallback(function (Nutgram $bot) {
+    if ($bot->isCallbackQuery()) {
+        $data = $bot->callbackQuery()?->data;
+
+        try {
+            $bot->answerCallbackQuery(
+                text: '❌ إجراء غير معروف',
+                show_alert: false,
+            );
+        } catch (\Throwable $e) {
+        }
+        return;
+    }
+
+    $bot->sendMessage(
+        text: "❓ <b>لم أفهم طلبك</b>\n\nاستخدم /start للبدء.",
+        parse_mode: 'HTML',
+    );
+});
