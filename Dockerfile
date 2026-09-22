@@ -30,4 +30,4 @@ RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs
 
 # Expose port 80
 EXPOSE 80
-CMD php artisan config:clear && php artisan route:clear && php artisan migrate --force && php artisan nutgram:hook:remove && (pkill -f "nutgram:run" || true) && sleep 2 && php artisan nutgram:run & php artisan serve --host=0.0.0.0 --port=80
+CMD php artisan config:clear && php artisan route:clear && php artisan migrate --force && php artisan db:seed --force && php artisan nutgram:hook:remove && (pkill -f "nutgram:run" || true) && sleep 2 && php artisan nutgram:run & php artisan serve --host=0.0.0.0 --port=80
