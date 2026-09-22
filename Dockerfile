@@ -1,18 +1,34 @@
-FROM richarvey/nginx-php-fpm:latest
+FROM php:8.3-fpm-alpine
 
-# Set working directory
+# Install system dependencies
+RUN apk add --no-cache \
+    nginx \
+    supervisor \
+    curl \
+    git \
+    unzip \
+    libpng-dev \
+    libzip-dev \
+    zip \
+    icu-dev \
+    oniguruma-dev
+
+# Install PHP extensions needed by Laravel
+RUN docker-php-ext-install pdo pdo_mysql bcmath gd zip mbstring intl
+
+# Install Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
 WORKDIR /var/www/html
 
-# Copy application code
+# Copy project files
 COPY . .
 
-# Environment variables for richarvey image
-ENV WEBROOT=/var/www/html/public
-ENV PHP_ERRORS_STDERR=1
-ENV RUN_SCRIPTS=1
-ENV REAL_IP_HEADER=1
+# Set permissions & run composer
+ENV COMPOSER_ALLOW_SUPERUSER=1
+RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs
 
 # Expose port 80
 EXPOSE 80
 
-CMD ["/start.sh"]
+CMD php artisan config:cache && php artisan route:cache && php artisan serve --host=0.0.0.0 --port=80
