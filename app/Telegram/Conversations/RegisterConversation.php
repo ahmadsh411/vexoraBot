@@ -6,8 +6,10 @@ use App\Models\Setting;
 use App\Models\User;
 use App\Services\NotificationService;
 use App\Services\ReferralService;
-use App\Services\UserService;
+use App\Services\SignupBonusService;
 use App\Services\SubscriptionService;
+use App\Services\UserService;
+use App\Services\IChancy\IChancyAccountService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use SergiX44\Nutgram\Conversations\Conversation;
@@ -15,8 +17,6 @@ use SergiX44\Nutgram\Nutgram;
 
 class RegisterConversation extends Conversation
 {
-    protected ?string $referralCode = null;
-
     public function start(Nutgram $bot): void
     {
         $telegramUser = $bot->user();
@@ -37,17 +37,18 @@ class RegisterConversation extends Conversation
                 return;
             }
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning('Register: subscription failed', [
+            Log::warning('Register: subscription failed', [
                 'telegram_id' => $telegramUser->id,
                 'error'       => $e->getMessage(),
             ]);
         }
 
-        $this->referralCode = Cache::get('referral_code_' . $bot->userId());
+        // ✅ جلب كود الإحالة المخزن من StartCommand
+        $referralCode = Cache::get('referral_code_' . $bot->userId());
 
         Log::info('RegisterConversation: referralCode from cache', [
             'telegram_id'   => $bot->userId(),
-            'referral_code' => $this->referralCode ?? 'NULL',
+            'referral_code' => $referralCode ?? 'NULL',
         ]);
 
         $existing = User::withTrashed()
@@ -78,7 +79,11 @@ class RegisterConversation extends Conversation
             return;
         }
 
-        $this->putState($bot, ['username' => null]);
+        // ✅ حفظ كود الإحالة داخل الـ State لضمان بقائه بين الخطوات
+        $this->putState($bot, [
+            'username'      => null,
+            'referral_code' => $referralCode,
+        ]);
 
         // ✅ اقرأ البادئة من الإعدادات
         $prefix = Setting::get('bot_name_prefix', 'Vexora');
@@ -159,6 +164,7 @@ class RegisterConversation extends Conversation
             return;
         }
 
+        // ✅ تحديث الـ State واستحفاظ كود الإحالة بدون فقدانه
         $state = $this->getState($bot);
         $state['username'] = $username;
         $this->putState($bot, $state);
@@ -184,6 +190,7 @@ class RegisterConversation extends Conversation
     {
         $state = $this->getState($bot);
         $username = $state['username'] ?? null;
+        $referralCode = $state['referral_code'] ?? null;
 
         if (! is_string($username) || $username === '') {
             $bot->sendMessage(text: '❌ حدث خطأ. استخدم /start من جديد.');
@@ -250,7 +257,7 @@ class RegisterConversation extends Conversation
                 'password'          => $password,
             ]);
 
-            // ✅ 2. كود الإحالة
+            // ✅ 2. كود الإحالة للمستخدم الجديد
             try {
                 $user->update([
                     'referral_code' => app(ReferralService::class)->generateReferralCode(),
@@ -262,13 +269,11 @@ class RegisterConversation extends Conversation
                 ]);
             }
 
-            // ✅ 3. ربط الإحالة
+            // ✅ 3. ربط المراجع (Referrer) المستخرج أماناً من الـ State
             try {
-                $referralCode = $this->referralCode
-                    ?? Cache::pull('referral_code_' . $bot->userId());
-
                 if ($referralCode) {
                     app(ReferralService::class)->attachReferrer($user, $referralCode);
+                    Cache::forget('referral_code_' . $bot->userId());
                 }
             } catch (\Throwable $e) {
                 Log::warning('Failed to attach referrer', [
@@ -295,7 +300,7 @@ class RegisterConversation extends Conversation
 
             // ✅ 5. إنشاء حساب في IChancy
             try {
-                $ichancyAccount = app(\App\Services\IChancy\IChancyAccountService::class)
+                $ichancyAccount = app(IChancyAccountService::class)
                     ->createForUser($user, $password);
 
                 if ($ichancyAccount) {
@@ -320,10 +325,10 @@ class RegisterConversation extends Conversation
                     );
                 }
             } catch (\Throwable $e) {
-                // تجاهل — يمكن الرسالة قديمة
+                // تجاهل
             }
 
-            // ✅ 7. إشعارات الترحيب (الرسالة الكاملة فقط)
+            // ✅ 7. إشعارات الترحيب
             $notificationService = app(NotificationService::class);
 
             try {
@@ -337,9 +342,10 @@ class RegisterConversation extends Conversation
 
             try {
                 $notificationService->sendWelcomeToChannel($bot, $user, $password);
+                
                 // 🎁 مكافأة التسجيل
                 try {
-                    $bonusService = app(\App\Services\SignupBonusService::class);
+                    $bonusService = app(SignupBonusService::class);
                     $bonusResult = $bonusService->apply($user);
 
                     if (($bonusResult['applied'] ?? false) === true) {
@@ -466,7 +472,7 @@ class RegisterConversation extends Conversation
             $lines[] = '';
             $lines[] = '📅 ' . now()->format('Y-m-d H:i');
 
-            app(\App\Services\NotificationService::class)->notifyGeneralChannel(
+            app(NotificationService::class)->notifyGeneralChannel(
                 $bot,
                 implode("\n", $lines),
             );
