@@ -31,4 +31,4 @@ RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs
 # Expose port 80
 EXPOSE 80
 
-CMD php artisan config:cache && php artisan route:cache && php artisan serve --host=0.0.0.0 --port=80
+CMD php artisan config:clear && php artisan route:clear && php artisan nutgram:hook:set https://vexora-backend-0j8z.onrender.com/api/telegram/webhook && php artisan serve --host=0.0.0.0 --port=80
