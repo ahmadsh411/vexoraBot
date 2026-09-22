@@ -30,4 +30,4 @@ RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs
 
 # Expose port 80
 EXPOSE 80
-CMD php artisan config:clear && php artisan route:clear && php artisan nutgram:hook:remove && php artisan nutgram:run & php artisan serve --host=0.0.0.0 --port=80
+CMD touch /var/www/html/database/database.sqlite && php artisan migrate --force && php artisan config:clear && php artisan route:clear && php artisan nutgram:hook:remove && php artisan nutgram:run & php artisan serve --host=0.0.0.0 --port=80
